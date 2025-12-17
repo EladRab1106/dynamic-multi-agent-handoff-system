@@ -1,15 +1,18 @@
 import os
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.oauth2.credentials import Credentials
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
+]
 
 CREDS_PATH = "credentials.json"
 TOKEN_PATH = "token.json"
 
 def main():
     if os.path.exists(TOKEN_PATH):
-        print("token.json already exists")
+        print("⚠️ token.json already exists — delete it and rerun if scopes changed")
         return
 
     flow = InstalledAppFlow.from_client_secrets_file(
