@@ -47,9 +47,7 @@ def gmail_tool(
     creds = load_gmail_credentials()
     service = build("gmail", "v1", credentials=creds)
 
-    # ------------------
-    # SEARCH EMAILS
-    # ------------------
+
     if action == "search":
         results = service.users().messages().list(
             userId="me",
@@ -81,9 +79,7 @@ def gmail_tool(
 
         return "\n\n".join(out)
 
-    # ------------------
-    # SEND EMAIL
-    # ------------------
+ 
     if action == "send":
         msg = MIMEMultipart()
         msg["to"] = recipient
