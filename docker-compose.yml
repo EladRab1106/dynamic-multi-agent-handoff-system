@@ -1,0 +1,8 @@
+services:
+  multi-agent:
+    image: eladrab1106/multi-agent-app:latest
+    container_name: multi-agent-app
+    env_file:
+      - .env
+    stdin_open: true
+    tty: true
