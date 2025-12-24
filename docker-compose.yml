@@ -6,3 +6,7 @@ services:
       - .env
     stdin_open: true
     tty: true
+    volumes:
+      - ./credentials.json:/app/credentials.json
+      - ./token.json:/app/token.json
+      - ./outputs:/app/outputs
