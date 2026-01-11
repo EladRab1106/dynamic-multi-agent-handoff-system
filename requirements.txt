@@ -76,3 +76,6 @@ urllib3==2.5.0
 xxhash==3.6.0
 yarl==1.22.0
 zstandard==0.25.0
+fastapi==0.115.0
+langserve
+uvicorn[standard]==0.32.0
