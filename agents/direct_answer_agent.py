@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from agents.base_agent import create_agent
 from agents.registry import register_agent
 from agents.spec import AgentSpec
+from agents.utils import build_completion_message, extract_completed_capability
 
 from config.config import llm
 from models.state import AgentState
@@ -13,7 +14,8 @@ from models.state import AgentState
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant. "
-    "Answer the user directly and concisely."
+    "Answer the user directly and concisely. "
+    "After providing your answer, return JSON: {{\"completed_capability\": \"direct_answer\"}}"
 )
 
 
@@ -120,8 +122,16 @@ def direct_answer_node(state: AgentState):
             # Fallback: convert to string
             result = AIMessage(content=str(output))
         
+        # Update context based on completion contract
         ctx = dict(state.get("context", {}))
-        ctx["last_completed_capability"] = "direct_answer"
+        content = result.content if hasattr(result, 'content') else str(result)
+        capability = extract_completed_capability(content)
+        if capability:
+            ctx["last_completed_capability"] = capability
+        else:
+            # If agent didn't return contract, wrap the result
+            result = build_completion_message("direct_answer")
+            ctx["last_completed_capability"] = "direct_answer"
         
         return {
             "messages": [result],
@@ -141,8 +151,21 @@ def direct_answer_node(state: AgentState):
         chain = build_direct_answer_agent()
         result = chain.invoke({"messages": state["messages"]})
         
+        # Ensure result is AIMessage
+        if not isinstance(result, AIMessage):
+            result = AIMessage(content=str(result) if result else "")
+        
+        # Check if result already follows completion contract
+        content = result.content if hasattr(result, 'content') else str(result)
+        capability = extract_completed_capability(content)
+        
         ctx = dict(state.get("context", {}))
-        ctx["last_completed_capability"] = "direct_answer"
+        if capability:
+            ctx["last_completed_capability"] = capability
+        else:
+            # Wrap result in completion contract
+            result = build_completion_message("direct_answer")
+            ctx["last_completed_capability"] = "direct_answer"
         
         return {
             "messages": [result],

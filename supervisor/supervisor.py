@@ -2,9 +2,11 @@ from typing import List
 
 from models.schemas import Plan
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import AIMessage, HumanMessage
 from models.state import AgentState
 from config.config import llm
 from agents.registry import CAPABILITY_INDEX
+from agents.utils import extract_completed_capability
 
 
 SUPERVISOR_PLANNING_PROMPT = """
@@ -50,22 +52,24 @@ def supervisor_node(state: AgentState):
     plan: List[str] = ctx["plan"]
     idx = ctx.get("current_step_index", 0)
 
-    # Check last message for completion status (agents now return final completion messages)
+    # STRICT JSON-BASED COMPLETION DETECTION
+    # Only check agent outputs (AIMessage), never user messages (HumanMessage)
+    # Only advance when explicit completion contract is detected
     messages = state.get("messages", [])
     if messages:
         last_msg = messages[-1]
-        if hasattr(last_msg, 'content'):
-            content_lower = last_msg.content.lower()
-            # Check if this message indicates completion of current step
-            if plan[idx] == "send_email" and "email_sent" in content_lower:
-                ctx["last_completed_capability"] = "send_email"
-            elif plan[idx] == "search_email" and ("from:" in content_lower or "subject:" in content_lower):
-                ctx["last_completed_capability"] = "search_email"
-            elif plan[idx] == "research" and content_lower and "email_sent" not in content_lower:
-                # Research is complete if we have content that's not an email status
-                ctx["last_completed_capability"] = "research"
-            elif plan[idx] == "create_document" and "report_created" in content_lower:
-                ctx["last_completed_capability"] = "create_document"
+        # Only process AIMessages (agent outputs), ignore HumanMessages (user input)
+        # This ensures user messages can NEVER complete a step
+        if isinstance(last_msg, AIMessage) and hasattr(last_msg, 'content'):
+            content = last_msg.content
+            # Extract completed capability from JSON contract
+            capability = extract_completed_capability(content)
+            if capability:
+                # Set last_completed_capability from contract
+                ctx["last_completed_capability"] = capability
+            # If no contract found, do NOT set last_completed_capability
+            # This prevents accidental step advancement
+        # Explicitly ignore HumanMessage - user input never completes steps
 
     last_completed = ctx.get("last_completed_capability")
 

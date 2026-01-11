@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import ToolMessage, AIMessage
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from agents.utils import build_completion_message
 
 
 def create_agent(llm, tools, system_prompt: str):
@@ -67,21 +68,22 @@ def create_agent(llm, tools, system_prompt: str):
                         )
                     )
         
-        # Create final completion message based on tool results
+        # Create final completion message with completion contract
         if tool_messages:
             # Check tool results for completion indicators
             tool_results_text = " ".join([str(msg.content) for msg in tool_messages])
             tool_results_lower = tool_results_text.lower()
             
-            # Create final completion message
+            # Emit completion contract based on tool results
             if "email_sent" in tool_results_lower:
-                return AIMessage(content="EMAIL_SENT")
-            elif "no_results" in tool_results_lower:
-                return AIMessage(content="NO_RESULTS")
+                # Gmail send completed
+                return build_completion_message("send_email")
             elif "from:" in tool_results_lower or "subject:" in tool_results_lower:
-                return AIMessage(content=tool_results_text)
+                # Gmail search completed
+                return build_completion_message("search_email", {"results": tool_results_text})
             else:
-                # Return tool results as completion message
+                # For research and other tools, return tool results
+                # The agent's system prompt will instruct it to return completion contract
                 return AIMessage(content=tool_results_text)
         else:
             # No tool messages, return original

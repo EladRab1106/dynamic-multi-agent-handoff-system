@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 from agents.base_agent import create_agent
 from agents.registry import register_agent
 from agents.spec import AgentSpec
+from agents.utils import build_completion_message, extract_completed_capability
 
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from config.config import llm
@@ -15,7 +16,9 @@ from models.state import AgentState
 SYSTEM_PROMPT = (
     "You are a document creation agent. "
     "Convert the latest JSON research in the conversation into a clean Markdown report. "
-    "Return ONLY Markdown with headings and bullet points."
+    "Return ONLY Markdown with headings and bullet points. "
+    "After completing the document, return JSON: "
+    '{{"completed_capability": "create_document", "data": {{"file_path": "outputs/report_xxx.md"}}}}'
 )
 
 
@@ -125,7 +128,26 @@ def document_creator_node(state: AgentState):
         # Extract markdown content
         md_content = result.content if hasattr(result, "content") else str(result)
         
-        # Save the markdown content to a file (same as original behavior)
+        # Try to parse as completion contract - if so, extract markdown from data
+        from agents.utils import parse_completion_message
+        contract = parse_completion_message(md_content)
+        if contract and "data" in contract and "file_path" in contract["data"]:
+            # Agent already returned contract with file_path
+            file_path = contract["data"]["file_path"]
+            # Try to extract markdown from contract if present
+            if "markdown" in contract["data"]:
+                md_content = contract["data"]["markdown"]
+        else:
+            # Extract markdown from content (remove any JSON if present)
+            try:
+                import json
+                parsed = json.loads(md_content)
+                if isinstance(parsed, dict) and "data" in parsed and "markdown" in parsed["data"]:
+                    md_content = parsed["data"]["markdown"]
+            except:
+                pass
+        
+        # Save the markdown content to a file
         os.makedirs("outputs", exist_ok=True)
         file_path = f"outputs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
         with open(file_path, "w", encoding="utf-8") as f:
@@ -133,10 +155,13 @@ def document_creator_node(state: AgentState):
         
         ctx = dict(state.get("context", {}))
         ctx["file_path"] = file_path
+        
+        # Build completion message with contract
+        completion_message = build_completion_message("create_document", {"file_path": file_path})
         ctx["last_completed_capability"] = "create_document"
         
         return {
-            "messages": [AIMessage(content=f"REPORT_CREATED: {file_path}")],
+            "messages": [completion_message],
             "context": ctx,
         }
         
@@ -156,16 +181,37 @@ def document_creator_node(state: AgentState):
         
         md_content = md_msg.content if hasattr(md_msg, "content") else str(md_msg)
         
+        # Try to extract markdown from completion contract if present
+        contract = extract_completed_capability(md_content)
+        if contract and "data" in contract:
+            if "markdown" in contract["data"]:
+                md_content = contract["data"]["markdown"]
+            elif "file_path" in contract["data"]:
+                file_path = contract["data"]["file_path"]
+                # File already created, just use the path
+                ctx = dict(state.get("context", {}))
+                ctx["file_path"] = file_path
+                completion_message = build_completion_message("create_document", {"file_path": file_path})
+                ctx["last_completed_capability"] = "create_document"
+                return {
+                    "messages": [completion_message],
+                    "context": ctx,
+                }
+        
+        # Save the markdown content to a file
         file_path = f"outputs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(md_content)
         
         ctx = dict(state.get("context", {}))
         ctx["file_path"] = file_path
+        
+        # Build completion message with contract
+        completion_message = build_completion_message("create_document", {"file_path": file_path})
         ctx["last_completed_capability"] = "create_document"
         
         return {
-            "messages": [AIMessage(content=f"REPORT_CREATED: {file_path}")],
+            "messages": [completion_message],
             "context": ctx,
         }
 

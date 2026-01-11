@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from agents.base_agent import create_agent
 from agents.registry import register_agent
 from agents.spec import AgentSpec
+from agents.utils import build_completion_message, extract_completed_capability
 
 from tools.gmail_tool import gmail_tool
 from config.config import llm
@@ -18,6 +19,8 @@ SYSTEM_PROMPT = (
     "- Attachments must be real file paths available in the system.\n"
     "- Only attach files if the user explicitly asks for it.\n"
     "- If unsure which file to attach, ask a clarification question.\n"
+    "- After successfully sending an email, return JSON: {{\"completed_capability\": \"send_email\"}}\n"
+    "- After successfully searching emails, return JSON: {{\"completed_capability\": \"search_email\"}}\n"
 )
 
 
@@ -135,15 +138,21 @@ def gmail_node(state: AgentState):
         else:
             result = AIMessage(content=str(output))
         
-        # Update context based on completion message
+        # Update context based on completion contract
         ctx = dict(state.get("context", {}))
-        content_lower = (result.content if hasattr(result, 'content') else str(result)).lower()
-        
-        # Detect capability completion from final message content
-        if "email_sent" in content_lower:
-            ctx["last_completed_capability"] = "send_email"
-        elif "from:" in content_lower or "subject:" in content_lower:
-            ctx["last_completed_capability"] = "search_email"
+        content = result.content if hasattr(result, 'content') else str(result)
+        capability = extract_completed_capability(content)
+        if capability:
+            ctx["last_completed_capability"] = capability
+        else:
+            # If agent didn't return contract, infer from content and wrap
+            content_lower = content.lower()
+            if "email_sent" in content_lower:
+                result = build_completion_message("send_email")
+                ctx["last_completed_capability"] = "send_email"
+            elif "from:" in content_lower or "subject:" in content_lower:
+                result = build_completion_message("search_email", {"results": content})
+                ctx["last_completed_capability"] = "search_email"
 
         return {
             "messages": [result],
@@ -183,12 +192,21 @@ def gmail_node(state: AgentState):
         if not isinstance(result, AIMessage):
             result = AIMessage(content=str(result) if result else "Processing request...")
         
-        # Update context based on completion message
-        content_lower = (result.content if hasattr(result, 'content') else str(result)).lower()
-        if "email_sent" in content_lower:
-            ctx["last_completed_capability"] = "send_email"
-        elif "from:" in content_lower or "subject:" in content_lower:
-            ctx["last_completed_capability"] = "search_email"
+        # Update context based on completion contract
+        content = result.content if hasattr(result, 'content') else str(result)
+        capability = extract_completed_capability(content)
+        
+        if capability:
+            ctx["last_completed_capability"] = capability
+        else:
+            # If agent didn't return contract, infer from content and wrap
+            content_lower = content.lower()
+            if "email_sent" in content_lower:
+                result = build_completion_message("send_email")
+                ctx["last_completed_capability"] = "send_email"
+            elif "from:" in content_lower or "subject:" in content_lower:
+                result = build_completion_message("search_email", {"results": content})
+                ctx["last_completed_capability"] = "search_email"
         
         return {
             "messages": [result],

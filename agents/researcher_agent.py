@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from agents.base_agent import create_agent
 from agents.registry import register_agent
 from agents.spec import AgentSpec
+from agents.utils import build_completion_message, extract_completed_capability
 
 from tools.search_tools import tavily
 from config.config import llm
@@ -16,7 +17,9 @@ SYSTEM_PROMPT = (
     "You are the Researcher Agent. "
     "Use the Tavily search tool whenever you need external information. "
     "When finished, summarize your findings in JSON with keys: "
-    "topic, summary, key_points, sources."
+    "topic, summary, key_points, sources. "
+    "After completing your research, return a JSON object with: "
+    '{{"completed_capability": "research", "data": {{"research_summary": {{...}}, "sources": [...]}}}}'
 )
 
 
@@ -123,9 +126,27 @@ def researcher_node(state: AgentState):
             # Fallback: convert to string
             result = AIMessage(content=str(output))
         
-        # Update context - agent now returns final completion message
+        # Update context based on completion contract
         ctx = dict(state.get("context", {}))
-        ctx["last_completed_capability"] = "research"
+        content = result.content if hasattr(result, 'content') else str(result)
+        capability = extract_completed_capability(content)
+        if capability:
+            ctx["last_completed_capability"] = capability
+        else:
+            # If agent didn't return contract, wrap the result
+            # Extract research data if present
+            try:
+                import json
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    data = parsed
+                else:
+                    data = {"research_summary": content}
+            except:
+                data = {"research_summary": content}
+            
+            result = build_completion_message("research", data)
+            ctx["last_completed_capability"] = "research"
         
         return {
             "messages": [result],
@@ -145,8 +166,31 @@ def researcher_node(state: AgentState):
         chain = build_researcher_agent()
         result = chain.invoke({"messages": state["messages"]})
         
+        # Ensure result is AIMessage
+        if not isinstance(result, AIMessage):
+            result = AIMessage(content=str(result) if result else "")
+        
+        # Check if result already follows completion contract
+        content = result.content if hasattr(result, 'content') else str(result)
+        capability = extract_completed_capability(content)
+        
         ctx = dict(state.get("context", {}))
-        ctx["last_completed_capability"] = "research"
+        if capability:
+            ctx["last_completed_capability"] = capability
+        else:
+            # Wrap result in completion contract
+            try:
+                import json
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    data = parsed
+                else:
+                    data = {"research_summary": content}
+            except:
+                data = {"research_summary": content}
+            
+            result = build_completion_message("research", data)
+            ctx["last_completed_capability"] = "research"
         
         return {
             "messages": [result],
