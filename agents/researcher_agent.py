@@ -154,48 +154,10 @@ def researcher_node(state: AgentState):
         }
         
     except requests.exceptions.RequestException as e:
-        # Fallback to local execution if API is unavailable
-        # This provides resilience in case the service is down
-        import warnings
-        warnings.warn(
-            f"Researcher API service unavailable ({api_base_url}): {e}. "
-            "Falling back to local execution."
+        raise RuntimeError(
+            f"researcher creator Agent service is unavailable at {api_base_url}. "
+            f"Remote execution is required. Original error: {e}"
         )
-        
-        # Fallback to local execution
-        chain = build_researcher_agent()
-        result = chain.invoke({"messages": state["messages"]})
-        
-        # Ensure result is AIMessage
-        if not isinstance(result, AIMessage):
-            result = AIMessage(content=str(result) if result else "")
-        
-        # Check if result already follows completion contract
-        content = result.content if hasattr(result, 'content') else str(result)
-        capability = extract_completed_capability(content)
-        
-        ctx = dict(state.get("context", {}))
-        if capability:
-            ctx["last_completed_capability"] = capability
-        else:
-            # Wrap result in completion contract
-            try:
-                import json
-                parsed = json.loads(content)
-                if isinstance(parsed, dict):
-                    data = parsed
-                else:
-                    data = {"research_summary": content}
-            except:
-                data = {"research_summary": content}
-            
-            result = build_completion_message("research", data)
-            ctx["last_completed_capability"] = "research"
-        
-        return {
-            "messages": [result],
-            "context": ctx,
-        }
 
 
 register_agent(

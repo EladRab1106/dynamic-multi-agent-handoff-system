@@ -166,54 +166,10 @@ def document_creator_node(state: AgentState):
         }
         
     except requests.exceptions.RequestException as e:
-        # Fallback to local execution if API is unavailable
-        # This provides resilience in case the service is down
-        import warnings
-        warnings.warn(
-            f"Document Creator API service unavailable ({api_base_url}): {e}. "
-            "Falling back to local execution."
+        raise RuntimeError(
+            f"doc creator Agent service is unavailable at {api_base_url}. "
+            f"Remote execution is required. Original error: {e}"
         )
-        
-        # Fallback to local execution
-        os.makedirs("outputs", exist_ok=True)
-        chain = build_document_creator_agent()
-        md_msg = chain.invoke({"messages": state["messages"]})
-        
-        md_content = md_msg.content if hasattr(md_msg, "content") else str(md_msg)
-        
-        # Try to extract markdown from completion contract if present
-        contract = extract_completed_capability(md_content)
-        if contract and "data" in contract:
-            if "markdown" in contract["data"]:
-                md_content = contract["data"]["markdown"]
-            elif "file_path" in contract["data"]:
-                file_path = contract["data"]["file_path"]
-                # File already created, just use the path
-                ctx = dict(state.get("context", {}))
-                ctx["file_path"] = file_path
-                completion_message = build_completion_message("create_document", {"file_path": file_path})
-                ctx["last_completed_capability"] = "create_document"
-                return {
-                    "messages": [completion_message],
-                    "context": ctx,
-                }
-        
-        # Save the markdown content to a file
-        file_path = f"outputs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(md_content)
-        
-        ctx = dict(state.get("context", {}))
-        ctx["file_path"] = file_path
-        
-        # Build completion message with contract
-        completion_message = build_completion_message("create_document", {"file_path": file_path})
-        ctx["last_completed_capability"] = "create_document"
-        
-        return {
-            "messages": [completion_message],
-            "context": ctx,
-        }
 
 
 register_agent(

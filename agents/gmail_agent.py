@@ -161,57 +161,10 @@ def gmail_node(state: AgentState):
 
         
     except requests.exceptions.RequestException as e:
-        # Fallback to local execution if API is unavailable
-        # This provides resilience in case the service is down
-        import warnings
-        warnings.warn(
-            f"Gmail API service unavailable ({api_base_url}): {e}. "
-            "Falling back to local execution."
+        raise RuntimeError(
+            f"Gmail Agent service is unavailable at {api_base_url}. "
+            f"Remote execution is required. Original error: {e}"
         )
-        
-        # Fallback to local execution
-        # Build a proper message list with context about file path if available
-        ctx = dict(state.get("context", {}))
-        messages_for_chain = list(state["messages"])
-        
-        # If there's a file_path in context, add it to the last message context
-        if "file_path" in ctx and messages_for_chain:
-            last_msg = messages_for_chain[-1]
-            if isinstance(last_msg, AIMessage):
-                # If last message is from DocumentCreator, create a new HumanMessage
-                from langchain_core.messages import HumanMessage
-                enhanced_msg = HumanMessage(
-                    content=f"Send the report file {ctx['file_path']} via email to the recipient mentioned in the original request."
-                )
-                messages_for_chain.append(enhanced_msg)
-        
-        chain = build_gmail_agent()
-        result = chain.invoke({"messages": messages_for_chain})
-        
-        # Ensure result is an AIMessage (agent now returns final completion message)
-        if not isinstance(result, AIMessage):
-            result = AIMessage(content=str(result) if result else "Processing request...")
-        
-        # Update context based on completion contract
-        content = result.content if hasattr(result, 'content') else str(result)
-        capability = extract_completed_capability(content)
-        
-        if capability:
-            ctx["last_completed_capability"] = capability
-        else:
-            # If agent didn't return contract, infer from content and wrap
-            content_lower = content.lower()
-            if "email_sent" in content_lower:
-                result = build_completion_message("send_email")
-                ctx["last_completed_capability"] = "send_email"
-            elif "from:" in content_lower or "subject:" in content_lower:
-                result = build_completion_message("search_email", {"results": content})
-                ctx["last_completed_capability"] = "search_email"
-        
-        return {
-            "messages": [result],
-            "context": ctx,
-        }
 
 
 register_agent(
