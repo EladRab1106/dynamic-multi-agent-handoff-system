@@ -4,29 +4,21 @@ from agents.gmail_agent import gmail_node
 from agents.document_creator_agent import document_creator_node
 from agents.direct_answer_agent import direct_answer_node
 from supervisor.supervisor import supervisor_node
-from tools.search_tools import tavily
-from tools.gmail_tool import gmail_tool
 from models.state import AgentState
-from langgraph.prebuilt import ToolNode
 
 def build_graph():
     graph = StateGraph(AgentState)
 
     graph.add_node("Supervisor", supervisor_node)
     graph.add_node("Researcher", researcher_node)
-    graph.add_node("ResearchTools", ToolNode([tavily]))
     graph.add_node("DocumentCreator", document_creator_node)
     graph.add_node("Gmail", gmail_node)
-    graph.add_node("GmailTools", ToolNode([gmail_tool]))
     graph.add_node("DirectAnswer", direct_answer_node)
 
-    graph.add_edge("Researcher", "ResearchTools")
-    graph.add_edge("ResearchTools", "Supervisor")
-
-    graph.add_edge("Gmail", "GmailTools")
-    graph.add_edge("GmailTools", "Supervisor")
-
+    # All agents now return directly to Supervisor after completing their work
+    graph.add_edge("Researcher", "Supervisor")
     graph.add_edge("DocumentCreator", "Supervisor")
+    graph.add_edge("Gmail", "Supervisor")
     graph.add_edge("DirectAnswer", "Supervisor")
 
     graph.add_conditional_edges(

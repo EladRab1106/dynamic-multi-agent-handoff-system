@@ -123,16 +123,8 @@ def researcher_node(state: AgentState):
             # Fallback: convert to string
             result = AIMessage(content=str(output))
         
-        # Check if tool calls were made (for context tracking)
+        # Update context - agent now returns final completion message
         ctx = dict(state.get("context", {}))
-        
-        # Check for tool calls in the result
-        if hasattr(result, 'tool_calls') and result.tool_calls:
-            # Tool calls are present, ResearchTools node will execute them
-            # This is expected for research operations
-            pass
-        
-        # Mark research capability as completed
         ctx["last_completed_capability"] = "research"
         
         return {

@@ -2,7 +2,6 @@ from typing import List
 
 from models.schemas import Plan
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import ToolMessage
 from models.state import AgentState
 from config.config import llm
 from agents.registry import CAPABILITY_INDEX
@@ -51,22 +50,22 @@ def supervisor_node(state: AgentState):
     plan: List[str] = ctx["plan"]
     idx = ctx.get("current_step_index", 0)
 
-    # Check for tool execution results in messages to detect completed capabilities
+    # Check last message for completion status (agents now return final completion messages)
     messages = state.get("messages", [])
-    for msg in reversed(messages[-5:]):  # Check last 5 messages
-        if isinstance(msg, ToolMessage):
-            # Check if this is a Gmail tool execution result
-            content = msg.content if hasattr(msg, 'content') else str(msg)
-            content_lower = content.lower()
-            
-            # If email was sent, mark send_email as completed
-            if "email_sent" in content_lower and plan[idx] == "send_email":
+    if messages:
+        last_msg = messages[-1]
+        if hasattr(last_msg, 'content'):
+            content_lower = last_msg.content.lower()
+            # Check if this message indicates completion of current step
+            if plan[idx] == "send_email" and "email_sent" in content_lower:
                 ctx["last_completed_capability"] = "send_email"
-                break
-            # If email search was performed, mark search_email as completed
-            elif ("from:" in content_lower or "subject:" in content_lower) and plan[idx] == "search_email":
+            elif plan[idx] == "search_email" and ("from:" in content_lower or "subject:" in content_lower):
                 ctx["last_completed_capability"] = "search_email"
-                break
+            elif plan[idx] == "research" and content_lower and "email_sent" not in content_lower:
+                # Research is complete if we have content that's not an email status
+                ctx["last_completed_capability"] = "research"
+            elif plan[idx] == "create_document" and "report_created" in content_lower:
+                ctx["last_completed_capability"] = "create_document"
 
     last_completed = ctx.get("last_completed_capability")
 
