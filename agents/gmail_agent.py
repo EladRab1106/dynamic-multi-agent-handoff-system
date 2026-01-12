@@ -164,7 +164,7 @@ def gmail_node(state: AgentState):
         raise RuntimeError(
             f"Gmail Agent service is unavailable at {api_base_url}. "
             f"Remote execution is required. Original error: {e}"
-        )
+    )
 
 
 register_agent(

@@ -1,12 +1,3 @@
-"""
-FastAPI service for Document Creator Agent using LangServe.
-
-This service exposes the Document Creator agent as a REST API with:
-- LangServe endpoints for full agent interaction
-- Chat endpoint for natural language interaction
-- Document creation with file output
-"""
-
 import os
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
@@ -18,39 +9,32 @@ from pydantic import BaseModel
 from agents.document_creator_agent import build_document_creator_agent
 
 
-# Request/Response Models
 class AgentChatRequest(BaseModel):
-    """Request model for agent chat interaction."""
     message: str
 
 
 class AgentChatResponse(BaseModel):
-    """Response model for agent chat interaction."""
     response: str
     file_path: str = None
 
 
-# Initialize FastAPI app
 app = FastAPI(
     title="Document Creator Agent Service",
     description="REST API for Document Creator Agent using LangServe",
     version="1.0.0",
 )
 
-# Add CORS middleware for cross-origin requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Build the agent chain
 document_creator_agent_chain = build_document_creator_agent()
 
-# Add LangServe routes for the agent chain
-# This exposes standard LangServe endpoints like /invoke, /stream, etc.
+
 add_routes(
     app,
     document_creator_agent_chain,
@@ -60,7 +44,6 @@ add_routes(
 
 @app.get("/")
 async def root():
-    """Health check endpoint."""
     return {
         "service": "Document Creator Agent Service",
         "status": "running",
@@ -73,24 +56,14 @@ async def root():
 
 @app.post("/chat", response_model=AgentChatResponse)
 async def chat_with_agent(request: AgentChatRequest):
-    """
-    Simple chat endpoint that uses the full agent chain.
-    
-    This endpoint uses the agent's reasoning capabilities to create
-    markdown documents from research data.
-    """
     try:
-        # Invoke the agent with the user's message
         result = document_creator_agent_chain.invoke({
             "messages": [HumanMessage(content=request.message)]
         })
         
-        # Extract the response from the agent's result
-        # The result is typically a message object
         if hasattr(result, 'content'):
             response_text = result.content
         elif isinstance(result, dict) and 'messages' in result:
-            # Handle case where result is a dict with messages
             messages = result['messages']
             if messages and hasattr(messages[-1], 'content'):
                 response_text = messages[-1].content
@@ -99,7 +72,6 @@ async def chat_with_agent(request: AgentChatRequest):
         else:
             response_text = str(result)
         
-        # Save the markdown content to a file
         os.makedirs("outputs", exist_ok=True)
         file_path = f"outputs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
         with open(file_path, "w", encoding="utf-8") as f:
@@ -116,6 +88,4 @@ async def chat_with_agent(request: AgentChatRequest):
         )
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+
