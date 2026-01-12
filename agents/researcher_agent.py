@@ -1,5 +1,6 @@
 import os
 import requests
+import json
 from typing import List, Dict, Any
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 
@@ -109,6 +110,19 @@ def researcher_node(state: AgentState):
         capability = extract_completed_capability(content)
         if capability:
             ctx["last_completed_capability"] = capability
+        
+        # Extract research data from completion contract and store in document_source
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict) and "data" in parsed:
+                research_data = parsed["data"].get("research_summary")
+                if research_data:
+                    ctx["document_source"] = {
+                        "type": "research",
+                        "content": research_data
+                    }
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
         
         return {
             "messages": [result],

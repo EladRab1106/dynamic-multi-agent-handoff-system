@@ -98,13 +98,16 @@ def gmail_node(state: AgentState):
         except (json.JSONDecodeError, TypeError):
             pass
         
-        ctx["gmail_data"] = {
-            "email": email_data
-        }
+        # Store email data in generic document_source contract
+        # This allows DocumentCreator to work with any source type
+        if email_data:
+            ctx["document_source"] = {
+                "type": "email",
+                "content": email_data
+            }
         
         # Ensure completion contract is set and properly formatted
         if "last_completed_capability" not in ctx:
-            # Create proper completion contract with email data if available
             completion_data = {"completed_capability": "gmail"}
             if email_data:
                 completion_data["data"] = {"email": email_data}
@@ -117,7 +120,6 @@ def gmail_node(state: AgentState):
             try:
                 parsed = json.loads(content)
                 if not isinstance(parsed, dict) or "completed_capability" not in parsed:
-                    # Rebuild with proper format
                     completion_data = {"completed_capability": "gmail"}
                     if email_data:
                         completion_data["data"] = {"email": email_data}
@@ -125,7 +127,6 @@ def gmail_node(state: AgentState):
                         completion_data["data"] = {"email": None}
                     result = AIMessage(content=json.dumps(completion_data))
             except:
-                # Content is not JSON, rebuild
                 completion_data = {"completed_capability": "gmail"}
                 if email_data:
                     completion_data["data"] = {"email": email_data}
