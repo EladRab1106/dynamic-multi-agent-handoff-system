@@ -35,7 +35,6 @@ def document_creator_node(state: AgentState):
     gmail_data = ctx.get("gmail_data", {})
     email = gmail_data.get("email")
 
-    # ❗ אין מייל → לא ממציאים
     if not email:
         content = json.dumps({
             "completed_capability": "create_document",
