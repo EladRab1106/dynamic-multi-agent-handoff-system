@@ -1,7 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import ToolMessage, AIMessage
-from langchain_core.runnables import RunnableLambda, RunnablePassthrough
-from agents.utils import build_completion_message
+from langchain_core.runnables import RunnableLambda
 
 
 def create_agent(llm, tools, system_prompt: str):
@@ -52,19 +51,10 @@ def create_agent(llm, tools, system_prompt: str):
                         )
                     )
         
-        if tool_messages:
-            tool_results_text = " ".join([str(msg.content) for msg in tool_messages])
-            tool_results_lower = tool_results_text.lower()
-            
-            if "email_sent" in tool_results_lower:
-                return build_completion_message("send_email")
-            elif "from:" in tool_results_lower or "subject:" in tool_results_lower:
-                return build_completion_message("search_email", {"results": tool_results_text})
-            else:
-
-                return AIMessage(content=tool_results_text)
-        else:
-            return llm_response
+        messages_with_tools = list(messages) + [llm_response] + tool_messages
+        final_response = (prompt | llm.bind_tools(tools)).invoke({"messages": messages_with_tools})
+        
+        return final_response
     
     def process_for_langserve(input_dict):
         return execute_tools_and_respond(input_dict)

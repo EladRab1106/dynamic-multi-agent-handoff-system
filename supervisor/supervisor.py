@@ -28,8 +28,6 @@ Rules:
 """
 
 
-
-
 def supervisor_node(state: AgentState):
     ctx = dict(state.get("context", {}))
 
@@ -52,24 +50,13 @@ def supervisor_node(state: AgentState):
     plan: List[str] = ctx["plan"]
     idx = ctx.get("current_step_index", 0)
 
-    # STRICT JSON-BASED COMPLETION DETECTION
-    # Only check agent outputs (AIMessage), never user messages (HumanMessage)
-    # Only advance when explicit completion contract is detected
     messages = state.get("messages", [])
     if messages:
         last_msg = messages[-1]
-        # Only process AIMessages (agent outputs), ignore HumanMessages (user input)
-        # This ensures user messages can NEVER complete a step
-        if isinstance(last_msg, AIMessage) and hasattr(last_msg, 'content'):
-            content = last_msg.content
-            # Extract completed capability from JSON contract
-            capability = extract_completed_capability(content)
+        if isinstance(last_msg, AIMessage) and hasattr(last_msg, "content"):
+            capability = extract_completed_capability(last_msg.content)
             if capability:
-                # Set last_completed_capability from contract
                 ctx["last_completed_capability"] = capability
-            # If no contract found, do NOT set last_completed_capability
-            # This prevents accidental step advancement
-        # Explicitly ignore HumanMessage - user input never completes steps
 
     last_completed = ctx.get("last_completed_capability")
 

@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from agents.base_agent import create_agent
 from agents.registry import register_agent
 from agents.spec import AgentSpec
-from agents.utils import build_completion_message, extract_completed_capability
+from agents.utils import extract_completed_capability
 
 from tools.search_tools import tavily
 from config.config import llm
@@ -15,25 +15,29 @@ from models.state import AgentState
 
 SYSTEM_PROMPT = (
     "You are the Researcher Agent. "
-    "Use the Tavily search tool whenever you need external information. "
-    "When finished, summarize your findings in JSON with keys: "
-    "topic, summary, key_points, sources. "
-    "After completing your research, return a JSON object with: "
-    '{{"completed_capability": "research", "data": {{"research_summary": {{...}}, "sources": [...]}}}}'
+    "Your task is to research topics using the Tavily search tool. "
+    "\n"
+    "Instructions: "
+    "1. Use the Tavily search tool to gather information about the requested topic. "
+    "2. Analyze and summarize your findings. "
+    "3. When your research is COMPLETE, you MUST return ONLY a JSON object in this exact format: "
+    '{{"completed_capability": "research", "data": {{"research_summary": {{"topic": "...", "summary": "...", "key_points": [...], "sources": [...]}}}}}}'
+    "\n"
+    "CRITICAL: "
+    "- Do NOT return anything else after emitting the completion contract. "
+    "- The completion contract must be the final and only output when research is done. "
+    "- If research is not complete, continue using tools and reasoning, but do NOT emit the contract yet."
 )
 
 
 def messages_to_dict(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
-    """Convert LangChain messages to dict format for JSON serialization."""
     result = []
     for msg in messages:
-        # Use model_dump() for Pydantic v2 or dict() for v1
         if hasattr(msg, 'model_dump'):
             msg_dict = msg.model_dump()
         elif hasattr(msg, 'dict'):
             msg_dict = msg.dict()
         else:
-            # Fallback: manual conversion
             msg_dict = {
                 "type": msg.__class__.__name__.replace("Message", "").lower(),
                 "content": msg.content if hasattr(msg, 'content') else str(msg)
@@ -43,17 +47,14 @@ def messages_to_dict(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
 
 
 def message_from_dict(msg_dict: Dict[str, Any]) -> BaseMessage:
-    """Convert a message dict back to a LangChain message object."""
     msg_type = msg_dict.get("type", "").lower()
     content = msg_dict.get("content", "")
     
-    # Map message types
     if msg_type in ["human", "user"]:
         return HumanMessage(content=content)
     elif msg_type in ["ai", "assistant"]:
         return AIMessage(content=content)
     else:
-        # Default to AIMessage
         return AIMessage(content=content)
 
 
@@ -66,27 +67,15 @@ def build_researcher_agent():
 
 
 def researcher_node(state: AgentState):
-    """
-    Researcher node that calls the Researcher Agent API service.
-    
-    This adapter makes HTTP requests to the Researcher service running at
-    http://localhost:8001 instead of running the agent locally.
-    """
-    # Get the API service URL from environment or use default
     api_base_url = os.getenv("RESEARCHER_SERVICE_URL", "http://localhost:8001")
     
-    # Extract messages from the state
     messages = state.get("messages", [])
     if not messages:
         raise ValueError("No messages in state")
     
     try:
-        # Prepare messages for the API call
-        # Convert LangChain messages to dict format using LangChain's utilities
         messages_dict = messages_to_dict(list(messages))
         
-        # Call the Researcher Agent API service
-        # Using /agent/invoke to get the full LangChain message format
         response = requests.post(
             f"{api_base_url}/agent/invoke",
             json={
@@ -94,59 +83,32 @@ def researcher_node(state: AgentState):
                     "messages": messages_dict
                 }
             },
-            timeout=60  # 60 second timeout (research can take longer)
+            timeout=60
         )
         response.raise_for_status()
         
-        # Extract the result from the response
         result_data = response.json()
-        
-        # The LangServe response structure: {"output": <chain_output>}
-        # For our agent chain, output is a message object (dict or message)
         output = result_data.get("output")
         
-        # Deserialize the message from the API response
-        # LangServe returns messages in dict format that can be deserialized
         if isinstance(output, dict):
-            # Try to deserialize as a message
             try:
-                # If it's a message dict, convert it
                 if "type" in output or "content" in output:
                     result = message_from_dict(output)
                 else:
-                    # Fallback: create AIMessage from content
                     result = AIMessage(content=str(output.get("content", output)))
             except Exception:
-                # If deserialization fails, create AIMessage from content
                 content = output.get("content", str(output))
                 result = AIMessage(content=content)
         elif isinstance(output, str):
             result = AIMessage(content=output)
         else:
-            # Fallback: convert to string
             result = AIMessage(content=str(output))
         
-        # Update context based on completion contract
         ctx = dict(state.get("context", {}))
         content = result.content if hasattr(result, 'content') else str(result)
         capability = extract_completed_capability(content)
         if capability:
             ctx["last_completed_capability"] = capability
-        else:
-            # If agent didn't return contract, wrap the result
-            # Extract research data if present
-            try:
-                import json
-                parsed = json.loads(content)
-                if isinstance(parsed, dict):
-                    data = parsed
-                else:
-                    data = {"research_summary": content}
-            except:
-                data = {"research_summary": content}
-            
-            result = build_completion_message("research", data)
-            ctx["last_completed_capability"] = "research"
         
         return {
             "messages": [result],
