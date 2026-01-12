@@ -125,7 +125,7 @@ def researcher_node(state: AgentState):
 register_agent(
     AgentSpec(
         name="Researcher",
-        capabilities=["research", "web_search", "fact_lookup"],
+        capabilities=["research"],
         build_chain=build_researcher_agent,
     )
 )
