@@ -1,12 +1,38 @@
+version: "3.9"
+
 services:
-  multi-agent:
-    image: eladrab1106/multi-agent-app:latest
-    container_name: multi-agent-app
-    env_file:
-      - .env
-    stdin_open: true
-    tty: true
-    volumes:
-      - ./credentials.json:/app/credentials.json
-      - ./token.json:/app/token.json
-      - ./outputs:/app/outputs
+  researcher:
+    build:
+      context: .
+      dockerfile: agents/researcher/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - SERVICE_NAME=researcher
+
+  document_creator:
+    build:
+      context: .
+      dockerfile: agents/document_creator/Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - SERVICE_NAME=document_creator
+
+  gmail:
+    build:
+      context: .
+      dockerfile: agents/gmail/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_NAME=gmail
+
+  direct_answer:
+    build:
+      context: .
+      dockerfile: agents/direct_answer/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - SERVICE_NAME=direct_answer
