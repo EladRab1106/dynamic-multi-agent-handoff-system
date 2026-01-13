@@ -1,12 +1,16 @@
 import os
 import requests
-import json
 from typing import List, Dict, Any
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage, ToolMessage
 
 from agents.base_agent import create_agent
 from agents.registry import register_agent
 from agents.spec import AgentSpec
+from agents.utils import (
+    build_completion_message,
+    parse_completion_message,
+    extract_completed_capability,
+)
 
 from tools.gmail_search_tool import gmail_search
 from tools.gmail_send_tool import gmail_send
@@ -86,17 +90,20 @@ def gmail_node(state: AgentState):
         ctx = dict(state.get("context", {}))
 
         content = result.content if hasattr(result, 'content') else str(result)
-        email_data = None
         
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                if "data" in parsed and "email" in parsed["data"]:
-                    email_data = parsed["data"]["email"]
-                if parsed.get("completed_capability") == "gmail":
-                    ctx["last_completed_capability"] = "gmail"
-        except (json.JSONDecodeError, TypeError):
-            pass
+        # Parse completion contract using shared utility
+        contract = parse_completion_message(content)
+        
+        email_data = None
+        if contract:
+            # Extract email data from completion contract
+            if "data" in contract and "email" in contract["data"]:
+                email_data = contract["data"]["email"]
+            
+            # Extract completed capability using shared utility
+            capability = extract_completed_capability(content)
+            if capability:
+                ctx["last_completed_capability"] = capability
         
         # Store email data in generic document_source contract
         # This allows DocumentCreator to work with any source type
@@ -106,33 +113,16 @@ def gmail_node(state: AgentState):
                 "content": email_data
             }
         
-        # Ensure completion contract is set and properly formatted
-        if "last_completed_capability" not in ctx:
-            completion_data = {"completed_capability": "gmail"}
-            if email_data:
-                completion_data["data"] = {"email": email_data}
-            else:
-                completion_data["data"] = {"email": None}
-            result = AIMessage(content=json.dumps(completion_data))
-            ctx["last_completed_capability"] = "gmail"
-        else:
-            # Ensure result has proper completion contract format
-            try:
-                parsed = json.loads(content)
-                if not isinstance(parsed, dict) or "completed_capability" not in parsed:
-                    completion_data = {"completed_capability": "gmail"}
-                    if email_data:
-                        completion_data["data"] = {"email": email_data}
-                    else:
-                        completion_data["data"] = {"email": None}
-                    result = AIMessage(content=json.dumps(completion_data))
-            except:
-                completion_data = {"completed_capability": "gmail"}
-                if email_data:
-                    completion_data["data"] = {"email": email_data}
-                else:
-                    completion_data["data"] = {"email": None}
-                result = AIMessage(content=json.dumps(completion_data))
+        # If no valid completion contract was found, create one using shared utility
+        if not contract:
+            completion_data = {"email": email_data} if email_data else {"email": None}
+            result = build_completion_message("gmail", completion_data)
+            # Extract capability from the contract we just created (fully contract-driven)
+            capability = extract_completed_capability(result.content)
+            if capability:
+                ctx["last_completed_capability"] = capability
+        # If contract exists, the agent already returned a valid completion contract
+        # The result is already correct, and capability was set above
 
         return {
             "messages": [result],
