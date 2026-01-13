@@ -4,7 +4,7 @@ from langserve import add_routes
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
-from agents.direct_answer_agent import build_direct_answer_agent
+from agents.direct_answer.direct_answer_agent import build_direct_answer_agent
 
 
 class AgentChatRequest(BaseModel):

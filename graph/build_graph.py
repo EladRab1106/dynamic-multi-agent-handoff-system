@@ -1,9 +1,9 @@
 from langgraph.graph import StateGraph, END
-from agents.researcher_agent import researcher_node
-from agents.gmail_agent import gmail_node
-from agents.document_creator_agent import document_creator_node
-from agents.direct_answer_agent import direct_answer_node
-from supervisor.supervisor import supervisor_node
+from agents.researcher.researcher_agent import researcher_node
+from agents.gmail.gmail_agent import gmail_node
+from agents.document_creator.document_creator_agent import document_creator_node
+from agents.direct_answer.direct_answer_agent import direct_answer_node
+from agents.supervisor.supervisor import supervisor_node
 from models.state import AgentState
 
 def build_graph():

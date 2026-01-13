@@ -4,7 +4,7 @@ from langserve import add_routes
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
-from agents.researcher_agent import build_researcher_agent
+from agents.researcher.researcher_agent import build_researcher_agent
 
 
 class AgentChatRequest(BaseModel):

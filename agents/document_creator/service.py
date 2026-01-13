@@ -6,7 +6,7 @@ from langserve import add_routes
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
-from agents.document_creator_agent import build_document_creator_agent
+from agents.document_creator.document_creator_agent import build_document_creator_agent
 
 
 class AgentChatRequest(BaseModel):

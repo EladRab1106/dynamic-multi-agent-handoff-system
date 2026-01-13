@@ -5,7 +5,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from typing import List, Optional
 
-from agents.gmail_agent import build_gmail_agent
+from agents.gmail.gmail_agent import build_gmail_agent
 from tools.gmail_tool import gmail_tool
 
 
