@@ -1,0 +1,14 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "document_creator": {
+      "module": "graph",
+      "callable": "build_document_creator_graph",
+      "metadata": {
+        "agent_name": "DocumentCreator",
+        "capabilities": ["create_document"]
+      }
+    }
+  },
+  "python_version": "3.11"
+}

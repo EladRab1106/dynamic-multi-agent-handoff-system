@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from agents.direct_answer.direct_answer_agent import build_direct_answer_agent
+from agents.direct_answer.graph import build_direct_answer_graph
 
 
 class AgentChatRequest(BaseModel):
@@ -31,11 +32,20 @@ app.add_middleware(
 )
 
 direct_answer_agent_chain = build_direct_answer_agent()
+direct_answer_graph = build_direct_answer_graph()
 
+# Expose the chain endpoint (for backward compatibility)
 add_routes(
     app,
     direct_answer_agent_chain,
     path="/agent",
+)
+
+# Expose the graph endpoint (for RemoteGraph integration)
+add_routes(
+    app,
+    direct_answer_graph,
+    path="/graph",
 )
 
 
@@ -45,9 +55,26 @@ async def root():
         "service": "Direct Answer Agent Service",
         "status": "running",
         "endpoints": {
-            "agent": "/agent/invoke - Full agent interaction via LangServe",
+            "agent": "/agent/invoke - Full agent interaction via LangServe (chain)",
+            "graph": "/graph/invoke - LangGraph endpoint for RemoteGraph integration",
             "chat": "/chat - Simple chat interface with agent",
+            "metadata": "/metadata - Agent metadata for capability discovery",
         }
+    }
+
+
+@app.get("/metadata")
+async def metadata():
+    """
+    Agent metadata endpoint for capability discovery.
+    
+    Returns static declarative metadata describing the agent's capabilities.
+    This endpoint is used by the Supervisor for dynamic capability discovery.
+    """
+    return {
+        "agent_name": "DirectAnswer",
+        "assistant_id": "graph",
+        "capabilities": ["direct_answer"]
     }
 
 

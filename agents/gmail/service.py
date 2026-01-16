@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from agents.gmail.gmail_agent import build_gmail_agent
+from agents.gmail.graph import build_gmail_graph
 from tools.gmail_tool import gmail_tool
 
 
@@ -53,11 +54,20 @@ app.add_middleware(
 )
 
 gmail_agent_chain = build_gmail_agent()
+gmail_graph = build_gmail_graph()
 
+# Expose the chain endpoint (for backward compatibility)
 add_routes(
     app,
     gmail_agent_chain,
     path="/agent",
+)
+
+# Expose the graph endpoint (for RemoteGraph integration)
+add_routes(
+    app,
+    gmail_graph,
+    path="/graph",
 )
 
 
@@ -67,11 +77,28 @@ async def root():
         "service": "Gmail Agent Service",
         "status": "running",
         "endpoints": {
-            "agent": "/agent/invoke - Full agent interaction via LangServe",
+            "agent": "/agent/invoke - Full agent interaction via LangServe (chain)",
+            "graph": "/graph/invoke - LangGraph endpoint for RemoteGraph integration",
             "send_email": "/send-email - Direct email sending",
             "read_email": "/read-email - Direct email search",
             "chat": "/chat - Simple chat interface with agent",
+            "metadata": "/metadata - Agent metadata for capability discovery",
         }
+    }
+
+
+@app.get("/metadata")
+async def metadata():
+    """
+    Agent metadata endpoint for capability discovery.
+    
+    Returns static declarative metadata describing the agent's capabilities.
+    This endpoint is used by the Supervisor for dynamic capability discovery.
+    """
+    return {
+        "agent_name": "Gmail",
+        "assistant_id": "graph",
+        "capabilities": ["gmail"]
     }
 
 

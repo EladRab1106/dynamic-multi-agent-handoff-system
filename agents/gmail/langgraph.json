@@ -1,0 +1,14 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "gmail": {
+      "module": "graph",
+      "callable": "build_gmail_graph",
+      "metadata": {
+        "agent_name": "Gmail",
+        "capabilities": ["gmail"]
+      }
+    }
+  },
+  "python_version": "3.11"
+}
