@@ -17,6 +17,14 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
+# Import tool usage tracker from gmail_agent
+try:
+    from gmail_agent import mark_tool_used
+except ImportError:
+    # Fallback if imported outside agent context
+    def mark_tool_used():
+        pass
+
 
 SCOPES_SEARCH = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -58,6 +66,7 @@ def gmail_search(query: str) -> Dict[str, Any]:
             }
         }
     """
+    mark_tool_used()
     creds = load_gmail_credentials(SCOPES_SEARCH)
     service = build("gmail", "v1", credentials=creds)
 
@@ -134,6 +143,7 @@ def gmail_send(
     Returns:
         Dict with status: {"status": "sent", "to": "...", "subject": "..."}
     """
+    mark_tool_used()
     creds = load_gmail_credentials(SCOPES_SEND)
     service = build("gmail", "v1", credentials=creds)
 
@@ -197,6 +207,7 @@ def read_file_content(file_path: str) -> Dict[str, Any]:
         FileNotFoundError: If file does not exist
         OSError: If file cannot be read
     """
+    mark_tool_used()
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
     

@@ -9,7 +9,7 @@ from tools import gmail_search, gmail_send, read_file_content
 from config import llm
 
 # Tool usage tracker (shared between agent and graph)
-_tool_usage_tracker = {"value": False}
+_tool_usage_tracker = {"used": False}
 
 
 SYSTEM_PROMPT = """You are the Gmail Agent in a strict multi-agent system.
@@ -207,9 +207,14 @@ def build_gmail_agent():
 
 def reset_tool_usage():
     """Reset tool usage flag. Called at start of each graph node invocation."""
-    _tool_usage_tracker["value"] = False
+    _tool_usage_tracker["used"] = False
 
 
-def get_tool_usage() -> bool:
+def mark_tool_used():
+    """Mark that a tool was used. Called by tools when executed."""
+    _tool_usage_tracker["used"] = True
+
+
+def was_tool_used() -> bool:
     """Get whether tool was used in current invocation."""
-    return _tool_usage_tracker.get("value", False)
+    return _tool_usage_tracker.get("used", False)

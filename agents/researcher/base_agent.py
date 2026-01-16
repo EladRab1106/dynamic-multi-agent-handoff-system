@@ -99,7 +99,7 @@ def create_agent(llm, tools, system_prompt: str, tool_usage_tracker=None):
                     tool_result = tool_map[tool_name].invoke(tool_args)
                     # Track tool usage if tracker is provided
                     if tool_usage_tracker:
-                        tool_usage_tracker["value"] = True
+                        tool_usage_tracker["used"] = True
                     # Convert dict results to JSON string for ToolMessage
                     if isinstance(tool_result, dict):
                         content = json.dumps(tool_result)

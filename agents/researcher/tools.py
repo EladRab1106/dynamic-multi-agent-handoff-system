@@ -19,6 +19,14 @@ _real_tavily = TavilySearchResults(
     max_results=5
 )
 
+# Import tool usage tracker from researcher_agent
+try:
+    from researcher_agent import mark_tool_used
+except ImportError:
+    # Fallback if imported outside agent context
+    def mark_tool_used():
+        pass
+
 
 @tool
 def tavily_search(query: str) -> dict:
@@ -31,4 +39,5 @@ def tavily_search(query: str) -> dict:
     Returns:
         Search results from Tavily
     """
+    mark_tool_used()
     return _real_tavily.invoke({"query": query})

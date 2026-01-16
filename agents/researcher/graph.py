@@ -16,9 +16,13 @@ The graph does NOT:
 
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage
+import json
+import logging
 
-from researcher_agent import build_researcher_agent
+from researcher_agent import build_researcher_agent, reset_tool_usage, was_tool_used
 from state import AgentState
+
+logger = logging.getLogger(__name__)
 
 
 def build_researcher_graph():
@@ -43,6 +47,9 @@ def build_researcher_graph():
         Invokes the Researcher agent chain and passes through the output unchanged.
         Agent is authoritative - no validation, no enforcement.
         """
+        # Reset tool usage at start of each invocation
+        reset_tool_usage()
+        
         messages = state.get("messages", [])
         if not messages:
             return {
@@ -60,6 +67,25 @@ def build_researcher_graph():
             response_message = result["messages"][-1] if result["messages"] else AIMessage(content=str(result))
         else:
             response_message = AIMessage(content=str(result))
+        
+        # Check if tool was used and add to completion contract if present
+        tool_used = was_tool_used()
+        content = response_message.content if hasattr(response_message, 'content') else str(response_message)
+        
+        # Try to parse and extend completion contract with tool_used
+        try:
+            contract = json.loads(content.strip())
+            if isinstance(contract, dict) and "completed_capability" in contract:
+                # Extend completion contract with tool_used
+                if "data" not in contract:
+                    contract["data"] = {}
+                contract["data"]["tool_used"] = tool_used
+                # Update response message with extended contract
+                response_message = AIMessage(content=json.dumps(contract))
+                logger.info(f"Researcher graph: Extended completion contract with tool_used={tool_used}")
+        except (json.JSONDecodeError, AttributeError, KeyError):
+            # Not a completion contract, pass through unchanged
+            pass
         
         # Pass through context unchanged - agent output is authoritative
         ctx = dict(state.get("context", {}))
