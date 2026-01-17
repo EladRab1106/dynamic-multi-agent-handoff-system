@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "direct_answer": "graph:build_direct_answer_graph"
+  }
+}

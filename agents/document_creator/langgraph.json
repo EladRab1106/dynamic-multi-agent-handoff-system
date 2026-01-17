@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "document_creator": "graph:build_document_creator_graph"
+  }
+}

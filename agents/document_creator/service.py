@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from agents.document_creator.document_creator_agent import build_document_creator_agent
+from agents.document_creator.graph import build_document_creator_graph
 
 
 class AgentChatRequest(BaseModel):
@@ -33,12 +34,20 @@ app.add_middleware(
 )
 
 document_creator_agent_chain = build_document_creator_agent()
+document_creator_graph = build_document_creator_graph()
 
-
+# Expose the chain endpoint (for backward compatibility)
 add_routes(
     app,
     document_creator_agent_chain,
     path="/agent",
+)
+
+# Expose the graph endpoint (for RemoteGraph integration)
+add_routes(
+    app,
+    document_creator_graph,
+    path="/graph",
 )
 
 
@@ -48,9 +57,26 @@ async def root():
         "service": "Document Creator Agent Service",
         "status": "running",
         "endpoints": {
-            "agent": "/agent/invoke - Full agent interaction via LangServe",
+            "agent": "/agent/invoke - Full agent interaction via LangServe (chain)",
+            "graph": "/graph/invoke - LangGraph endpoint for RemoteGraph integration",
             "chat": "/chat - Simple chat interface with agent",
+            "metadata": "/metadata - Agent metadata for capability discovery",
         }
+    }
+
+
+@app.get("/metadata")
+async def metadata():
+    """
+    Agent metadata endpoint for capability discovery.
+    
+    Returns static declarative metadata describing the agent's capabilities.
+    This endpoint is used by the Supervisor for dynamic capability discovery.
+    """
+    return {
+        "agent_name": "DocumentCreator",
+        "assistant_id": "graph",
+        "capabilities": ["create_document"]
     }
 
 

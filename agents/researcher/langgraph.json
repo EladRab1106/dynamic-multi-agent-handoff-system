@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "researcher": "graph:build_researcher_graph"
+  }
+}

@@ -1,5 +1,7 @@
 import operator
-from typing import Annotated, Sequence, TypedDict, Dict, Any
+from typing import Annotated, Sequence, Dict, Any
+from typing_extensions import TypedDict
+
 from langchain_core.messages import BaseMessage
 
 class AgentState(TypedDict):

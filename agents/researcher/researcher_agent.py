@@ -1,240 +1,136 @@
-import os
-import requests
-import json
-import re
-from typing import List, Dict, Any
+"""
+Researcher Agent - Core agent chain logic.
 
-from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
+This module is fully self-contained and uses only relative imports.
+"""
 
-from agents.base_agent import create_agent
-from agents.registry import register_agent
-from agents.spec import AgentSpec
-from agents.utils import (
-    build_completion_message,
-    parse_completion_message,
-    extract_completed_capability,
-)
-
-from tools.search_tools import tavily
-from config.config import llm
-from models.state import AgentState
+from base_agent import create_agent
+from tools import tavily_search
+from config import llm
 
 
-SYSTEM_PROMPT = (
-    "You are the Researcher Agent.\n"
-    "Your ONLY task is to research topics using the Tavily search tool.\n\n"
+SYSTEM_PROMPT = """
+You are the Researcher Agent.
 
-    "INSTRUCTIONS:\n"
-    "1. Use the Tavily search tool to gather information about the requested topic.\n"
-    "2. Analyze and summarize your findings.\n"
-    "3. When your research is COMPLETE, you MUST return ONLY valid JSON in this exact format:\n"
-    "The JSON should have 'completed_capability' set to 'research' and 'data.research_summary' containing 'topic', 'summary', 'key_points' (list), and 'sources' (list).\n\n"
+You are a general intelligent assistant and may answer ANY user question.
 
-    "CRITICAL RULES:\n"
-    "- Return ONLY the JSON completion contract - no other text, no explanations, no markdown\n"
-    "- Do NOT mention other agents' responsibilities (e.g., sending emails, creating documents)\n"
-    "- Do NOT say 'I will now...' or 'I cannot...' - just return the JSON\n"
-    "- Start your response with a JSON object and end with a JSON object\n"
-    "- The completion contract must be the final and only output when research is done\n"
-    "- If research is not complete, continue using tools - do NOT emit the contract yet\n"
-    "- Focus ONLY on research - do not discuss what happens next"
-)
+You have ONE special capability: research.
+
+You also have access to the Tavily search tool for researching topics.
+
+────────────────────
+TOOL USAGE RULES
+────────────────────
+• Use the Tavily search tool ONLY when the user asks you to research, investigate, or find information about a topic.
+• If the user asks to research a topic:
+- You MUST call the Tavily search tool at least once
+- You are NOT allowed to answer from prior knowledge
+- If you did not use the tool, you MUST NOT emit completed_capability
 
 
+────────────────────
+WHEN TO EMIT COMPLETION
+────────────────────
+You must emit a completion contract ONLY after successfully completing research using the Tavily tool.
+
+The completion contract must:
+• Indicate completion of capability: research
+• Include a data object with research_summary containing:
+  - topic: the researched topic
+  - summary: a summary of findings
+  - key_points: list of key points
+  - sources: list of source URLs
+
+Format:
+{{
+  "completed_capability": "research",
+  "data": {{
+    "research_summary": {{
+      "topic": "...",
+      "summary": "...",
+      "key_points": ["...", "..."],
+      "sources": ["...", "..."]
+    }}
+  }}
+}}
+
+────────────────────
+WHEN NOT TO EMIT COMPLETION
+────────────────────
+If the user request is unrelated to research:
+• Answer normally
+• Do NOT return JSON
+• Do NOT include completed_capability
+
+────────────────────
+CRITICAL RULES
+────────────────────
+• NEVER emit completed_capability for any value other than "research"
+• NEVER emit a completion contract without using the Tavily search tool
+• NEVER include explanations alongside a completion contract
+• If research is not complete, continue using tools - do NOT emit the contract yet
+
+CRITICAL OUTPUT RULE (ABSOLUTE - SYSTEM WILL FAIL IF VIOLATED):
+After using the Tavily search tool, you MUST return ONLY the completion JSON contract.
+
+THE ENTIRE RESPONSE MUST BE:
+{{
+  "completed_capability": "research",
+  "data": {{
+    "research_summary": {{
+      "topic": "...",
+      "summary": "...",
+      "key_points": ["...", "..."],
+      "sources": ["...", "..."]
+    }}
+  }}
+}}
+
+FORBIDDEN:
+❌ NO text before the JSON
+❌ NO text after the JSON
+❌ NO explanations like "I have gathered information..."
+❌ NO markdown formatting
+❌ NO bullet points
+❌ NO summaries outside the JSON
+❌ NO "Here is a summary..." text
+❌ NO apologies or instructions
+
+THE JSON MUST BE THE FIRST AND LAST CHARACTER OF YOUR RESPONSE.
+
+If you return ANY text outside the JSON, the system will immediately fail with an error.
+This is a hard requirement - there is no exception.
+"""
 
 
-def messages_to_dict(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
-    result = []
-    for msg in messages:
-        if hasattr(msg, 'model_dump'):
-            msg_dict = msg.model_dump()
-        elif hasattr(msg, 'dict'):
-            msg_dict = msg.dict()
-        else:
-            msg_dict = {
-                "type": msg.__class__.__name__.replace("Message", "").lower(),
-                "content": msg.content if hasattr(msg, 'content') else str(msg)
-            }
-        result.append(msg_dict)
-    return result
-
-
-def message_from_dict(msg_dict: Dict[str, Any]) -> BaseMessage:
-    msg_type = msg_dict.get("type", "").lower()
-    content = msg_dict.get("content", "")
-    
-    if msg_type in ["human", "user"]:
-        return HumanMessage(content=content)
-    elif msg_type in ["ai", "assistant"]:
-        return AIMessage(content=content)
-    else:
-        return AIMessage(content=content)
-
-
-def _extract_research_data_from_text(content: str) -> Dict[str, Any] | None:
-    """
-    Attempt to extract research data from plain text response.
-    
-    This is a fallback mechanism when the agent doesn't return proper JSON.
-    Tries to find structured data in the text that might represent research results.
-    """
-    if not content:
-        return None
-    
-    # Try to find JSON-like structures in the text
-    # Look for patterns like {"topic": "...", "summary": "..."}
-    try:
-        # Try to parse as JSON first
-        parsed = json.loads(content)
-        if isinstance(parsed, dict) and "research_summary" in parsed.get("data", {}):
-            return parsed["data"]["research_summary"]
-    except (json.JSONDecodeError, TypeError):
-        pass
-    
-    # Try to find JSON in markdown code blocks
-    json_match = re.search(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
-    if json_match:
-        try:
-            parsed = json.loads(json_match.group(1))
-            if isinstance(parsed, dict) and "research_summary" in parsed.get("data", {}):
-                return parsed["data"]["research_summary"]
-        except (json.JSONDecodeError, TypeError):
-            pass
-    
-    # Try to find any JSON object in the text
-    json_match = re.search(r'\{[^{}]*"research_summary"[^{}]*\}', content, re.DOTALL)
-    if json_match:
-        try:
-            parsed = json.loads(json_match.group(0))
-            if isinstance(parsed, dict) and "research_summary" in parsed.get("data", {}):
-                return parsed["data"]["research_summary"]
-        except (json.JSONDecodeError, TypeError):
-            pass
-    
-    return None
+# Tool usage tracker (shared between agent and graph)
+_tool_usage_tracker = {"used": False}
 
 
 def build_researcher_agent():
+    """
+    Build the Researcher agent chain.
+    
+    This function creates the agent chain that will be wrapped by the LangGraph.
+    """
     return create_agent(
         llm=llm,
-        tools=[tavily],
+        tools=[tavily_search],
         system_prompt=SYSTEM_PROMPT,
+        tool_usage_tracker=_tool_usage_tracker,
     )
 
 
-def researcher_node(state: AgentState):
-    api_base_url = os.getenv("RESEARCHER_SERVICE_URL", "http://localhost:8001")
-    
-    messages = state.get("messages", [])
-    if not messages:
-        raise ValueError("No messages in state")
-    
-    try:
-        messages_dict = messages_to_dict(list(messages))
-        
-        response = requests.post(
-            f"{api_base_url}/agent/invoke",
-            json={
-                "input": {
-                    "messages": messages_dict
-                }
-            },
-            timeout=60
-        )
-        response.raise_for_status()
-        
-        result_data = response.json()
-        output = result_data.get("output")
-        
-        if isinstance(output, dict):
-            try:
-                if "type" in output or "content" in output:
-                    result = message_from_dict(output)
-                else:
-                    result = AIMessage(content=str(output.get("content", output)))
-            except Exception:
-                content = output.get("content", str(output))
-                result = AIMessage(content=content)
-        elif isinstance(output, str):
-            result = AIMessage(content=output)
-        else:
-            result = AIMessage(content=str(output))
-        
-        ctx = dict(state.get("context", {}))
-        content = result.content if hasattr(result, 'content') else str(result)
-        
-        # Parse completion contract using shared utility
-        contract = parse_completion_message(content)
-        
-        research_data = None
-        if contract:
-            # Extract research data from completion contract
-            if "data" in contract and "research_summary" in contract["data"]:
-                research_data = contract["data"]["research_summary"]
-            
-            # Extract completed capability using shared utility
-            capability = extract_completed_capability(content)
-            if capability:
-                ctx["last_completed_capability"] = capability
-        else:
-            # Contract parsing failed - agent may have returned plain text
-            # Try to extract research data from the response and force proper completion format
-            # This is a safety mechanism to prevent infinite loops
-            research_data = _extract_research_data_from_text(content)
-            
-            # Force proper completion contract using shared utility
-            if research_data:
-                completion_data = {"research_summary": research_data}
-            else:
-                # Fallback: create minimal research summary from content
-                research_data = {
-                    "topic": "Unknown",
-                    "summary": content[:500] if len(content) > 500 else content,
-                    "key_points": [],
-                    "sources": []
-                }
-                completion_data = {"research_summary": research_data}
-            
-            result = build_completion_message("research", completion_data)
-            # Extract capability from the contract we just created (fully contract-driven)
-            capability = extract_completed_capability(result.content)
-            if capability:
-                ctx["last_completed_capability"] = capability
-        
-        # Store research data in generic document_source contract
-        # This allows DocumentCreator to work with any source type
-        if research_data:
-            ctx["document_source"] = {
-                "type": "research",
-                "content": research_data
-            }
-        
-        # Debug assertion: verify completion contract is valid
-        # This catches contract violations early in development
-        final_content = result.content if hasattr(result, 'content') else str(result)
-        final_contract = parse_completion_message(final_content)
-        if not final_contract:
-            raise ValueError(
-                f"Researcher agent failed to return valid completion contract. "
-                f"Content: {final_content[:200]}..."
-            )
-        
-        return {
-            "messages": [result],
-            "context": ctx,
-        }
-        
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(
-            f"researcher creator Agent service is unavailable at {api_base_url}. "
-            f"Remote execution is required. Original error: {e}"
-        )
+def reset_tool_usage():
+    """Reset tool usage flag. Called at start of each graph node invocation."""
+    _tool_usage_tracker["used"] = False
 
 
-register_agent(
-    AgentSpec(
-        name="Researcher",
-        capabilities=["research"],
-        build_chain=build_researcher_agent,
-    )
-)
+def mark_tool_used():
+    """Mark that a tool was used. Called by tools when executed."""
+    _tool_usage_tracker["used"] = True
+
+
+def was_tool_used() -> bool:
+    """Get whether tool was used in current invocation."""
+    return _tool_usage_tracker.get("used", False)

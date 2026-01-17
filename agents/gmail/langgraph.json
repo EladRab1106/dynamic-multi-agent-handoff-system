@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "gmail": "graph:build_gmail_graph"
+  }
+}

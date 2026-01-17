@@ -1,0 +1,410 @@
+RESEARCHER AGENT FLOW - END-TO-END EXPLANATION
+==============================================
+
+This document explains exactly how the Researcher agent is invoked, processes requests,
+and returns responses in the multi-agent LangGraph system. This is a step-by-step
+technical explanation for understanding the system architecture.
+
+================================================================================
+1. HOW THE RESEARCHER AGENT IS INVOKED
+================================================================================
+
+The Researcher agent is invoked through a distributed service architecture using
+HTTP and LangServe. Here is the exact flow:
+
+INITIATION POINT:
+-----------------
+The flow begins in main.py when a user enters a request. The main.py file:
+1. Discovers agent capabilities via graph/capability_discovery.py
+2. Builds the main system graph via graph/build_graph.py
+3. Creates an initial AgentState with the user's message
+4. Invokes the compiled graph workflow
+
+SUPERVISOR PLANNING:
+--------------------
+The Supervisor (agents/supervisor/supervisor.py) is the entry point of the graph.
+The supervisor_node function:
+1. Analyzes the user request using an LLM
+2. Generates a plan with structured output (Plan schema from models/schemas.py)
+3. The plan contains a list of capability strings, e.g., ["research", "create_document"]
+4. If "research" is in the plan, the Supervisor sets state["next"] = "Researcher"
+
+GRAPH ROUTING:
+--------------
+The main graph (graph/build_graph.py) uses conditional edges to route execution:
+- The Supervisor returns {"next": "Researcher"} in its output
+- The conditional edge function reads state["next"]
+- It routes to the "Researcher" node based on the mapping:
+  {
+    "Researcher": "Researcher",
+    ...
+  }
+
+REMOTEGRAPH SETUP:
+------------------
+In graph/build_graph.py, the Researcher is set up as a RemoteGraph:
+- Line 36-37: researcher_service_url = os.getenv("RESEARCHER_SERVICE_URL", "http://localhost:8001")
+- Line 37: researcher_remote = RemoteGraph("researcher", url=researcher_service_url)
+- Line 50: graph.add_node("Researcher", researcher_remote)
+
+This means the "Researcher" node is NOT a local function call, but a reference to
+a remote service that will be invoked over HTTP.
+
+HTTP REQUEST ORIGIN:
+--------------------
+When LangGraph executes the "Researcher" node, the RemoteGraph class (from
+langgraph.pregel.remote) automatically:
+1. Serializes the current AgentState into JSON
+2. Makes an HTTP POST request to: http://localhost:8001/graph/invoke
+3. The endpoint is determined by: {service_url}/graph/invoke
+4. Uses the LangServe protocol for LangGraph state transfer
+
+The HTTP request originates from within the LangGraph execution engine when it
+encounters the RemoteGraph node. This is handled by LangGraph's internal
+RemoteGraph implementation, not by custom code in this codebase.
+
+================================================================================
+2. WHAT THE HTTP REQUEST LOOKS LIKE CONCEPTUALLY
+================================================================================
+
+The HTTP request sent to the Researcher service contains the full AgentState
+structure. Here's what is included:
+
+DATA STRUCTURE (AgentState):
+----------------------------
+The AgentState is defined in models/state.py as a TypedDict with:
+- messages: Sequence[BaseMessage] - The conversation history
+- next: str - Routing instruction (not used by agent, only by orchestrator)
+- context: Dict[str, Any] - Shared context dictionary
+
+MESSAGES FIELD:
+---------------
+The messages array contains the full conversation history:
+- The original user request as a HumanMessage
+- Any previous agent responses as AIMessage objects
+- System messages if any were injected
+
+For a first-time Researcher invocation, messages typically contains:
+[
+  HumanMessage(content="research the company Apple")
+]
+
+CONTEXT FIELD:
+--------------
+The context dictionary may contain:
+- Planning information from Supervisor (plan, current_step_index, etc.)
+- Completed capabilities tracking
+- Any other orchestration metadata
+
+The Researcher agent does NOT modify or rely on context for its business logic.
+It only reads messages to understand the user's request.
+
+PROTOCOL:
+---------
+The request is sent as:
+- Method: POST
+- URL: http://localhost:8001/graph/invoke
+- Content-Type: application/json
+- Body: Serialized AgentState JSON
+
+This is NOT a direct Python function call. It is a remote HTTP invocation where:
+- The main system graph runs in one process (main.py)
+- The Researcher service runs in a separate process (agents/researcher/service.py)
+- They communicate over HTTP using LangServe's standard protocol
+
+The RemoteGraph class handles all serialization, HTTP communication, and
+response deserialization automatically.
+
+================================================================================
+3. WHAT HAPPENS INSIDE THE RESEARCHER AGENT
+================================================================================
+
+The Researcher agent is a fully self-contained service. Here's what happens
+when it receives the HTTP request:
+
+SERVICE RECEPTION:
+------------------
+The HTTP request arrives at agents/researcher/service.py, which is a FastAPI
+application. The service exposes the Researcher graph via LangServe:
+- Line 44-48: add_routes(app, researcher_graph, path="/graph")
+- This creates the /graph/invoke endpoint that RemoteGraph calls
+
+GRAPH EXECUTION:
+---------------
+The researcher_graph is built by agents/researcher/graph.py in the function
+build_researcher_graph(). This graph:
+1. Has a single node called "researcher" (line 100)
+2. The node function is researcher_node() (line 43)
+3. Entry point is "researcher" (line 101)
+4. Has a hard edge to END (line 102)
+
+RESEARCHER NODE FUNCTION:
+--------------------------
+The researcher_node function (agents/researcher/graph.py, line 43) does:
+1. Resets tool usage tracker (line 51: reset_tool_usage())
+2. Extracts messages from AgentState (line 53)
+3. Invokes the Researcher agent chain (line 61: researcher_chain.invoke())
+4. Extracts the response message (lines 64-69)
+5. Optionally extends completion contract with tool_used flag (lines 76-88)
+6. Returns the response in AgentState format (lines 93-96)
+
+AGENT CHAIN EXECUTION:
+----------------------
+The researcher_chain is built by agents/researcher/researcher_agent.py in the
+function build_researcher_agent() (line 110). This creates an agent using:
+- LLM from config (agents/researcher/config.py)
+- Tools: [tavily_search] (line 118)
+- System prompt: SYSTEM_PROMPT (defined lines 12-103)
+
+The agent chain (created by agents/researcher/base_agent.py, create_agent function):
+1. Receives messages from the graph node
+2. Processes them through the LLM with tools bound
+3. The LLM may call tavily_search tool if research is needed
+4. The LLM generates a response based on tool results
+5. Returns an AIMessage with the final response
+
+TOOL EXECUTION:
+--------------
+If the LLM decides to use the tavily_search tool:
+- The tool is defined in agents/researcher/tools.py (line 31)
+- It wraps the real TavilySearchResults tool from langchain_community
+- When called, it marks tool usage (line 42: mark_tool_used())
+- Returns search results from Tavily API
+- The LLM receives tool results and incorporates them into its response
+
+COMPLETION CONTRACT GENERATION:
+--------------------------------
+The Researcher agent's system prompt (researcher_agent.py, lines 12-103) instructs
+the LLM to return a completion contract after successful research. The contract
+must be pure JSON in this format:
+
+{
+  "completed_capability": "research",
+  "data": {
+    "research_summary": {
+      "topic": "...",
+      "summary": "...",
+      "key_points": ["...", "..."],
+      "sources": ["...", "..."]
+    }
+  }
+}
+
+The system prompt is very strict: the response MUST be ONLY JSON, no text before
+or after (lines 74-102). This is a hard requirement enforced by the prompt.
+
+AUTHORITATIVE BEHAVIOR:
+-----------------------
+The Researcher agent is fully authoritative:
+- No external system validates its output
+- No external system modifies its behavior
+- No external system enforces completion contracts
+- The agent itself decides when research is complete
+- The agent itself generates the completion contract
+- The graph wrapper only passes through the agent's output unchanged
+
+The graph node (researcher_node) does NOT:
+- Parse or validate the completion contract
+- Modify the agent's response
+- Add business logic
+- Enforce any rules
+
+It only:
+- Invokes the agent chain
+- Passes through the response
+- Optionally adds tool_used flag to completion contract if present
+
+================================================================================
+4. HOW THE RESEARCHER RETURNS ITS RESPONSE
+================================================================================
+
+The Researcher agent returns its response through the same HTTP channel it
+received the request:
+
+RESPONSE FORMAT:
+----------------
+The researcher_node function returns a dictionary matching AgentState:
+{
+  "messages": [AIMessage(content="...")],
+  "context": {...}
+}
+
+The messages array contains a single AIMessage with the agent's response.
+The response content is the completion contract JSON string (if research was
+performed) or a conversational response (if no research was needed).
+
+COMPLETION CONTRACT STRUCTURE:
+-------------------------------
+If research was performed, the AIMessage.content contains pure JSON:
+{
+  "completed_capability": "research",
+  "data": {
+    "research_summary": {
+      "topic": "Apple Inc.",
+      "summary": "Apple Inc. is a technology company...",
+      "key_points": ["Founded in 1976", "Headquartered in Cupertino", ...],
+      "sources": ["https://...", "https://..."]
+    },
+    "tool_used": true
+  }
+}
+
+The "completed_capability" field is the critical signal. It must be exactly
+"research" for the Supervisor to recognize completion.
+
+The "data" field contains the research results. The graph wrapper may add
+"tool_used": true if the tavily_search tool was called (graph.py, lines 76-88).
+
+HTTP RESPONSE:
+--------------
+LangServe automatically:
+1. Serializes the AgentState return value to JSON
+2. Sends it back as HTTP response body
+3. Uses standard LangServe response format
+
+The response is sent back to the RemoteGraph caller (the main system graph).
+
+RESPONSE MERGING:
+-----------------
+When RemoteGraph receives the HTTP response:
+1. It deserializes the JSON back into AgentState
+2. It merges the returned state into the main graph's state
+3. Specifically, it appends the returned messages to the global messages array
+4. It updates context if provided
+
+The main graph's state now contains:
+- Original user message
+- Researcher's response message (with completion contract)
+- Updated context
+
+================================================================================
+5. HOW THE SUPERVISOR KNOWS THE RESEARCHER IS FINISHED
+================================================================================
+
+The Supervisor detects completion by reading the completion contract from the
+Researcher's response message:
+
+MESSAGE INSPECTION:
+-------------------
+After the Researcher returns, control flows back to the Supervisor (because of
+the edge: graph.add_edge("Researcher", "Supervisor") in build_graph.py, line 56).
+
+The supervisor_node function (supervisor.py, line 21) then:
+1. Gets all messages from state (line 93: messages = state.get("messages", []))
+2. Finds the last agent message (lines 114-133)
+3. Extracts content from that message (line 118, 126, or 132)
+
+COMPLETION CONTRACT EXTRACTION:
+-------------------------------
+The Supervisor uses agents/utils.py, extract_completed_capability() function
+(line 127) to read the completion contract:
+1. It calls parse_completion_message() (line 18) to parse JSON from message content
+2. It looks for the "completed_capability" field
+3. If found, it returns the capability string (e.g., "research")
+
+In supervisor.py, line 136:
+  capability = extract_completed_capability(last_agent_content)
+
+If capability is "research", the Supervisor knows the Researcher completed.
+
+NO CONTENT INSPECTION:
+---------------------
+The Supervisor does NOT:
+- Read the research_summary data
+- Validate the research quality
+- Check if tools were used
+- Inspect any internal agent data
+
+It ONLY reads the "completed_capability" field. This is the black-box contract:
+the Supervisor treats agents as opaque services that signal completion via
+the completion contract, but does not inspect their internal outputs.
+
+PROGRESS TRACKING:
+------------------
+When capability = "research" is detected (supervisor.py, line 143):
+1. The Supervisor adds "research" to completed_capabilities list (line 145)
+2. It increments current_step_index (line 147)
+3. It resets retry count for this capability (lines 149-150)
+4. It logs the completion (lines 154-156)
+
+The Supervisor then checks if all steps in the plan are complete (line 186).
+If not, it dispatches the next capability in the plan.
+
+================================================================================
+6. HOW CONTROL FLOWS BACK INTO THE SYSTEM
+================================================================================
+
+After the Researcher completes and the Supervisor detects completion, control
+flows back into the main system graph for continued execution:
+
+STATE MERGING:
+--------------
+The RemoteGraph merges the Researcher's response into the main graph state:
+- The Researcher's AIMessage is appended to the global messages array
+- The conversation history now includes the research results
+- Context is updated if the Researcher returned any
+
+SUPERVISOR RE-INVOCATION:
+-------------------------
+Because of the edge "Researcher" → "Supervisor" (build_graph.py, line 56),
+the Supervisor node is automatically invoked again after the Researcher finishes.
+
+The Supervisor then:
+1. Detects "research" completion (as explained in section 5)
+2. Advances to the next step in the plan (if any)
+3. Returns {"next": "<next_agent>"} or {"next": "FINISH"}
+
+ROUTING CONTINUATION:
+---------------------
+The conditional edge (build_graph.py, lines 61-71) routes based on state["next"]:
+- If next = "DocumentCreator", routes to DocumentCreator
+- If next = "Gmail", routes to Gmail
+- If next = "FINISH", ends the workflow
+
+NO BUSINESS LOGIC:
+------------------
+At this stage, no business logic is executed:
+- The Supervisor does not process research data
+- The Supervisor does not format documents
+- The Supervisor does not send emails
+
+The Supervisor only:
+- Tracks progress
+- Routes to next agent
+- Detects completion
+
+The actual business work (research, document creation, email sending) happens
+inside the respective agent services, not in the orchestrator.
+
+FINAL TERMINATION:
+-----------------
+When all steps are complete, the Supervisor returns {"next": "FINISH"}.
+The conditional edge routes to END, and the workflow terminates.
+
+The final state is returned to main.py, which can then display results to the user.
+
+================================================================================
+SUMMARY
+================================================================================
+
+The Researcher agent flow is a distributed service invocation:
+
+1. User request → main.py → Supervisor plans → Routes to Researcher
+2. RemoteGraph makes HTTP POST to http://localhost:8001/graph/invoke
+3. Researcher service receives AgentState, processes via agent chain
+4. Agent uses tavily_search tool if needed, generates completion contract
+5. Researcher returns AgentState with completion contract in AIMessage.content
+6. RemoteGraph merges response into main graph state
+7. Supervisor reads "completed_capability": "research" from message
+8. Supervisor advances plan, routes to next agent or FINISH
+
+Key architectural points:
+- Researcher is a separate HTTP service (not a local function)
+- Researcher is authoritative (no external validation)
+- Supervisor only reads completion signals (black-box contract)
+- All business logic lives inside the Researcher agent
+- The orchestrator only routes and tracks progress
+
+This architecture allows agents to run on separate machines, scale independently,
+and be developed/deployed separately while maintaining loose coupling through
+the completion contract interface.

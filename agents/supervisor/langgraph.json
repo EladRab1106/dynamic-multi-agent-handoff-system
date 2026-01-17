@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "supervisor": "graph:build_supervisor_graph"
+  }
+}
