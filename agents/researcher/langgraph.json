@@ -1,14 +1,6 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "researcher": {
-      "module": "graph",
-      "callable": "build_researcher_graph",
-      "metadata": {
-        "agent_name": "Researcher",
-        "capabilities": ["research"]
-      }
-    }
-  },
-  "python_version": "3.11"
+    "researcher": "graph:build_researcher_graph"
+  }
 }

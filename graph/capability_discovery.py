@@ -9,7 +9,11 @@ The discovery process:
 1. Reads agent service URLs from AGENT_SERVICES environment variable
 2. Queries each service's /graphs endpoint
 3. Validates metadata strictly (agent_name, capabilities)
-4. Builds CAPABILITY_INDEX dynamically: Dict[capability, agent_name]
+4. Builds capability_index: Dict[capability, agent_name] for orchestrator routing
+
+The capability_index is used by the orchestrator to map capability strings
+(from Supervisor) to agent names for routing. Capabilities list is injected
+into Supervisor state for planning.
 
 This enables true decoupling - adding a new agent requires only:
 - Creating the agent service with /graphs endpoint exposing metadata
@@ -42,6 +46,9 @@ def discover_capabilities() -> Dict[str, str]:
     
     Raises:
         RuntimeError: If AGENT_SERVICES is not set, no services respond, or no valid capabilities discovered
+    
+    Note: This function returns capability_index for orchestrator routing.
+    Capabilities list is derived from capability_index.keys().
     """
     capability_index: Dict[str, str] = {}
     

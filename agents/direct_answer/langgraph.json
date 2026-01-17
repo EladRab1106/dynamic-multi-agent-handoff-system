@@ -1,14 +1,6 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "direct_answer": {
-      "module": "graph",
-      "callable": "build_direct_answer_graph",
-      "metadata": {
-        "agent_name": "DirectAnswer",
-        "capabilities": ["direct_answer"]
-      }
-    }
-  },
-  "python_version": "3.11"
+    "direct_answer": "graph:build_direct_answer_graph"
+  }
 }

@@ -3,63 +3,168 @@
 # Agents are currently trusted as authoritative.
 # A dedicated Validation Agent will be introduced later to verify outputs.
 
-from typing import List
+"""
+Supervisor Agent - Core planning and routing logic.
+
+This module is fully self-contained and uses only relative imports.
+"""
+
+from typing import List, Dict, Any
 import logging
 import json
 
-from models.schemas import Plan
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import AIMessage, HumanMessage
-from models.state import AgentState
-from config.config import llm
-import agents.registry as registry
-from agents.utils import extract_completed_capability
+
+# Local relative imports (self-contained)
+from state import AgentState
+from config import llm
+from schemas import Plan
+from utils import extract_completed_capability
 
 logger = logging.getLogger(__name__)
 
 
 def supervisor_node(state: AgentState):
     ctx = dict(state.get("context", {}))
+    
+    # Preserve capabilities in context for subsequent invocations
+    # Capabilities are injected by orchestrator and must persist across Supervisor calls
+    if "capabilities" not in ctx:
+        # If capabilities missing, try to get from state (shouldn't happen, but defensive)
+        ctx["capabilities"] = state.get("context", {}).get("capabilities", [])
 
     # === STEP 1: Dynamic planning (only once) ===
     if "plan" not in ctx:
-        available_capabilities = sorted(registry.CAPABILITY_INDEX.keys())
-        capabilities_text = "\n".join(f"- {c}" for c in available_capabilities)
+        # Read capabilities from context (provided by orchestrator)
+        # Supervisor receives ONLY capability strings, not agent names or URLs
+        available_capabilities = ctx.get("capabilities", [])
+        
+        if not available_capabilities:
+            logger.warning("Supervisor: No capabilities provided in context. Treating as direct answer mode.")
+            # No capabilities available - answer directly
+            messages = state.get("messages", [])
+            original_request = None
+            for msg in messages:
+                if isinstance(msg, HumanMessage) or (hasattr(msg, 'type') and msg.type == "human"):
+                    original_request = msg.content if hasattr(msg, 'content') else str(msg)
+                    break
+            
+            if not original_request:
+                original_request = "Process the request"
+            
+            # Answer directly using Supervisor's LLM
+            answer_prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are a helpful assistant. Answer the user's question directly and clearly."),
+                MessagesPlaceholder("messages"),
+            ])
+            
+            response = (answer_prompt | llm).invoke({"messages": messages})
+            response_content = response.content if hasattr(response, 'content') else str(response)
+            
+            logger.info("Supervisor: No capabilities available - answering directly")
+            return {
+                "next": "FINISH",
+                "context": {**ctx, "supervisor_mode": "direct"},
+                "messages": [AIMessage(content=response_content)]
+            }
+        
+        capabilities_text = "\n".join(f"- {c}" for c in sorted(available_capabilities))
 
         # Extract original user request (first human message)
         original_request = None
         for msg in state.get("messages", []):
-            if isinstance(msg, HumanMessage) or (hasattr(msg, 'type') and msg.type == "human"):
+            # Handle both HumanMessage objects and dict representations
+            if isinstance(msg, HumanMessage):
+                original_request = msg.content if hasattr(msg, 'content') else str(msg)
+                break
+            elif isinstance(msg, dict):
+                if msg.get("type") == "human":
+                    original_request = msg.get("content", str(msg))
+                    break
+            elif hasattr(msg, 'type') and msg.type == "human":
                 original_request = msg.content if hasattr(msg, 'content') else str(msg)
                 break
         
         if not original_request:
             original_request = "Process the request"
+        
+        logger.debug(f"Supervisor: Extracted original request: {original_request[:200]}...")
+
+        # Build dynamic examples based on available capabilities
+        # Examples should illustrate multi-step and single-step scenarios
+        example_capabilities = sorted(available_capabilities)
+        examples_text = ""
+        
+        if len(example_capabilities) >= 3:
+            # Multi-step example with 3+ capabilities - format as JSON array
+            cap1, cap2, cap3 = example_capabilities[0], example_capabilities[1], example_capabilities[2]
+            examples_text = f'''User: "perform task requiring {cap1}, then {cap2}, then {cap3}"
+Response: {{{{ "steps": ["{cap1}", "{cap2}", "{cap3}"] }}}}
+
+User: "perform task requiring {cap1}"
+Response: {{{{ "steps": ["{cap1}"] }}}}
+
+User: "what is 2+2?"
+Response: {{{{ "steps": [] }}}}'''
+        elif len(example_capabilities) >= 2:
+            cap1, cap2 = example_capabilities[0], example_capabilities[1]
+            examples_text = f'''User: "perform task requiring {cap1} then {cap2}"
+Response: {{{{ "steps": ["{cap1}", "{cap2}"] }}}}
+
+User: "perform task requiring {cap1}"
+Response: {{{{ "steps": ["{cap1}"] }}}}
+
+User: "what is 2+2?"
+Response: {{{{ "steps": [] }}}}'''
+        elif len(example_capabilities) >= 1:
+            cap1 = example_capabilities[0]
+            examples_text = f'''User: "perform task requiring {cap1}"
+Response: {{{{ "steps": ["{cap1}"] }}}}
+
+User: "what is 2+2?"
+Response: {{{{ "steps": [] }}}}'''
+        else:
+            examples_text = '''User: "what is 2+2?"
+Response: {{{{ "steps": [] }}}}'''
 
         system_prompt = f"""
-You are the Supervisor/Planner in a strict multi-agent system.
+You are the Supervisor / Planner in a STRICT multi-agent system.
 
-Available capabilities (EXACT STRINGS – must be used verbatim):
+Available capabilities (EXACT STRINGS — must be used verbatim):
 {capabilities_text}
 
-Your job:
-1. Analyze the user request.
-2. Choose the minimal ordered list of capabilities needed.
-3. Return ONLY JSON in the following format:
+Your task:
+1. Analyze the user's request.
+2. Decide which of the AVAILABLE capabilities listed above are REQUIRED.
+3. Return a minimal, ordered list of capabilities.
 
+Return ONLY valid JSON in this format:
 {{{{ "steps": ["capability_1", "capability_2"] }}}}
 
-CRITICAL RULES:
-- You MUST use ONLY the exact capability strings listed above.
-- Do NOT paraphrase, rename, or invent capabilities.
-- Do NOT use synonyms (e.g. "send_email", "generate_file").
-- If you need to create a document, use: create_document
-- If you need to send an email, use: gmail
-- If no capability applies, return an empty list.
-- If no tools are required, return ["direct_answer"].
+STRICT RULES (VIOLATION = SYSTEM FAILURE):
+- Use ONLY the listed capabilities.
+- Use capability strings EXACTLY as shown.
+- Do NOT invent, rename, or explain.
+- Do NOT return text outside JSON.
 
-Any deviation is considered a system failure.
+You may return an EMPTY list ONLY if:
+- The request is purely conversational
+- Requires no external action
+- And none of the capabilities apply
+
+EXAMPLES:
+
+{examples_text}
+
+User request:
+"{original_request}"
+
+Analyze carefully and return the JSON plan now.
 """
+
+
+
 
         planning_prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
@@ -72,8 +177,28 @@ Any deviation is considered a system failure.
         )
 
         steps: List[str] = list(plan_obj.steps or [])
+        
+        # Log the plan for debugging
+        logger.info(f"Supervisor: LLM returned plan with {len(steps)} steps: {steps}")
+        logger.debug(f"Supervisor: Original request was: {original_request}")
+        
+        # If plan is empty, answer directly (LLM has decided no capabilities are needed)
         if not steps:
-            steps = ["direct_answer"]
+            messages = state.get("messages", [])
+            answer_prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are a helpful assistant. Answer the user's question directly and clearly."),
+                MessagesPlaceholder("messages"),
+            ])
+            
+            response = (answer_prompt | llm).invoke({"messages": messages})
+            response_content = response.content if hasattr(response, 'content') else str(response)
+            
+            logger.info("Supervisor: Plan is empty - answering directly")
+            return {
+                "next": "FINISH",
+                "context": {**ctx, "supervisor_mode": "direct"},
+                "messages": [AIMessage(content=response_content)]
+            }
 
         ctx["plan"] = steps
         ctx["current_step_index"] = 0
@@ -224,23 +349,24 @@ Any deviation is considered a system failure.
     agent_retry_count[capability] = retry_count + 1
     ctx["agent_retry_count"] = agent_retry_count
     
-    # HARD ASSERTION: Every planned capability MUST exist in CAPABILITY_INDEX
-    if capability not in registry.CAPABILITY_INDEX:
+    # Validate capability exists in available capabilities
+    available_capabilities = ctx.get("capabilities", [])
+    if capability not in available_capabilities:
+        available = sorted(available_capabilities) if available_capabilities else []
         raise RuntimeError(
-            f"Capability '{capability}' was requested in plan but no agent provides it. "
-            f"Available capabilities: {sorted(registry.CAPABILITY_INDEX.keys())}. "
+            f"Capability '{capability}' was requested in plan but is not available. "
+            f"Available capabilities: {available}. "
             f"This is a system configuration error - the capability must be discovered "
-            f"before the Supervisor can use it."
+            f"and provided in context before the Supervisor can use it."
         )
     
-    agent_name = registry.CAPABILITY_INDEX[capability]
-    
     logger.info(
-        f"Supervisor: Dispatching step {idx+1}/{len(plan)}: capability={capability} → agent={agent_name} "
+        f"Supervisor: Dispatching step {idx+1}/{len(plan)}: capability={capability} "
         f"(attempt {retry_count + 1}/{MAX_RETRIES})"
     )
 
+    # Return capability string in "next" - orchestrator maps to agent_name
     return {
-        "next": agent_name,
+        "next": capability,  # Return capability string, not agent name
         "context": ctx,
     }

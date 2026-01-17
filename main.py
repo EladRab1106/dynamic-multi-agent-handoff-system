@@ -1,7 +1,6 @@
 import logging
 from langchain_core.messages import HumanMessage
 from models.state import AgentState
-from agents.registry import set_capability_index
 from graph.capability_discovery import discover_capabilities
 from graph.build_graph import build_graph
 from dotenv import load_dotenv
@@ -16,11 +15,12 @@ if __name__ == "__main__":
     print("=== Multi-Agent System (Context-Aware Supervisor + Planning) ===")
     
     # Discover agent capabilities BEFORE building the graph
-    # This ensures CAPABILITY_INDEX is populated before Supervisor planning
+    # Capability index is used by orchestrator for routing (capability → agent_name)
+    # Capabilities list is injected into Supervisor for planning
     logger.info("Starting capability discovery...")
     try:
         capability_index = discover_capabilities()
-        set_capability_index(capability_index)
+        capabilities = sorted(capability_index.keys())
         
         # Print discovered capabilities in readable format
         print("\n" + "=" * 60)
@@ -45,12 +45,18 @@ if __name__ == "__main__":
 
     q = input("Enter your request: ")
 
-    workflow = build_graph()
+    # Build graph with capability_index for routing (capability → agent_name)
+    workflow = build_graph(capability_index=capability_index)
 
+    # Inject ONLY capabilities into context for Supervisor
+    # Supervisor plans using capability strings only
+    # Orchestrator maps capability → agent_name for routing
     init_state: AgentState = {
         "messages": [HumanMessage(content=q)],
         "next": "Supervisor",
-        "context": {},
+        "context": {
+            "capabilities": capabilities,  # Only capability strings, no agent names
+        },
     }
 
     logger.info("Starting workflow execution...")
