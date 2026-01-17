@@ -32,5 +32,8 @@ venv/
 .idea/
 .vscode/
 
+# LangGraph runtime artifacts
+.langgraph_api/
+**/.langgraph_api/
 
 
