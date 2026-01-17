@@ -32,6 +32,8 @@ def build_graph(capability_index: Dict[str, str]):
     The orchestrator maps capability strings (from Supervisor) to agent names
     for routing. The Supervisor never sees agent names or URLs.
     """
+    if not capability_index:
+        raise RuntimeError("No capabilities discovered – cannot build graph")
     graph = StateGraph(AgentState)
 
     # Create RemoteGraph references to all agents
