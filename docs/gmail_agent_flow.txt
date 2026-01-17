@@ -1,0 +1,670 @@
+GMAIL AGENT FLOW - END-TO-END EXPLANATION
+==========================================
+
+This document explains exactly how the Gmail agent is invoked, processes requests,
+handles attachments, and returns responses in the multi-agent LangGraph system.
+This is a step-by-step technical explanation for understanding the system architecture.
+
+================================================================================
+1. HOW THE GMAIL AGENT IS INVOKED
+================================================================================
+
+The Gmail agent is invoked through a distributed service architecture using
+HTTP and LangServe. Here is the exact flow:
+
+SUPERVISOR PLANNING:
+--------------------
+The Supervisor (agents/supervisor/supervisor.py) is the entry point of the graph.
+The supervisor_node function:
+1. Analyzes the user request using an LLM (line 70-72)
+2. Generates a plan with structured output (Plan schema from models/schemas.py)
+3. The plan contains a list of capability strings, e.g., ["research", "create_document", "gmail"]
+4. If "gmail" is in the plan, the Supervisor sets state["next"] = "Gmail"
+
+ROUTING DECISION:
+-----------------
+The routing decision is made in supervisor.py, line 236:
+  agent_name = registry.CAPABILITY_INDEX[capability]
+
+If capability = "gmail", then agent_name = "Gmail" (from the capability registry).
+
+The Supervisor returns (line 243-246):
+  {
+    "next": "Gmail",
+    "context": ctx,
+  }
+
+GRAPH ROUTING:
+--------------
+The main graph (graph/build_graph.py) uses conditional edges to route execution:
+- The Supervisor returns {"next": "Gmail"} in its output
+- The conditional edge function reads state["next"] (line 63)
+- It routes to the "Gmail" node based on the mapping (line 67):
+  {
+    "Gmail": "Gmail",
+    ...
+  }
+
+REMOTEGRAPH SETUP:
+------------------
+In graph/build_graph.py, the Gmail agent is set up as a RemoteGraph:
+- Line 42-43: gmail_service_url = os.getenv("GMAIL_SERVICE_URL", "http://localhost:8000")
+- Line 43: gmail_remote = RemoteGraph("gmail", url=gmail_service_url)
+- Line 52: graph.add_node("Gmail", gmail_remote)
+
+This means the "Gmail" node is NOT a local function call, but a reference to
+a remote service that will be invoked over HTTP.
+
+The Gmail agent may run on a completely different machine than the orchestrator.
+The RemoteGraph abstraction handles all network communication transparently.
+
+HTTP REQUEST ORIGIN:
+--------------------
+When LangGraph executes the "Gmail" node, the RemoteGraph class (from
+langgraph.pregel.remote) automatically:
+1. Serializes the current AgentState into JSON
+2. Makes an HTTP POST request to: http://localhost:8000/graph/invoke
+3. The endpoint is determined by: {service_url}/graph/invoke
+4. Uses the LangServe protocol for LangGraph state transfer
+
+The HTTP request originates from within the LangGraph execution engine when it
+encounters the RemoteGraph node. This is handled by LangGraph's internal
+RemoteGraph implementation, not by custom code in this codebase.
+
+================================================================================
+2. HOW THE HTTP REQUEST TO GMAIL IS MADE
+================================================================================
+
+The HTTP request sent to the Gmail service contains the full AgentState
+structure. Here's what is included:
+
+DATA STRUCTURE (AgentState):
+----------------------------
+The AgentState is defined in models/state.py as a TypedDict with:
+- messages: Sequence[BaseMessage] - The conversation history
+- next: str - Routing instruction (not used by agent, only by orchestrator)
+- context: Dict[str, Any] - Shared context dictionary
+
+MESSAGES FIELD:
+---------------
+The messages array contains the full conversation history:
+- The original user request as a HumanMessage
+- Previous agent responses (e.g., Researcher's research results)
+- DocumentCreator's completion contract (if document was created)
+- Any other messages in the conversation flow
+
+For a typical flow where Gmail is called after DocumentCreator, messages contains:
+[
+  HumanMessage(content="research Apple and create report, then send via gmail"),
+  AIMessage(content='{"completed_capability": "research", "data": {...}}'),
+  AIMessage(content='{"completed_capability": "create_document", "data": {"file_path": "...", "abs_file_path": "..."}}'),
+  HumanMessage(content="send via gmail")  // or the original request
+]
+
+The DocumentCreator's completion contract in the messages array is how the Gmail
+agent discovers file paths for attachments. The Gmail agent reads this from
+conversation history, not from shared filesystem or context injection.
+
+CONTEXT FIELD:
+--------------
+The context dictionary may contain:
+- Planning information from Supervisor (plan, current_step_index, etc.)
+- Completed capabilities tracking
+- Any other orchestration metadata
+
+The Gmail agent does NOT rely on context for business logic. It only reads
+messages to understand the user's request and discover file references.
+
+PROTOCOL:
+---------
+The request is sent as:
+- Method: POST
+- URL: http://localhost:8000/graph/invoke
+- Content-Type: application/json
+- Body: Serialized AgentState JSON
+
+This is NOT a direct Python function call. It is a remote HTTP invocation where:
+- The main system graph runs in one process (main.py)
+- The Gmail service runs in a separate process (agents/gmail/service.py)
+- They communicate over HTTP using LangServe's standard protocol
+- The Gmail service may run on a different machine entirely
+
+The RemoteGraph class handles all serialization, HTTP communication, and
+response deserialization automatically. The orchestrator does not need to
+know about HTTP details - it just invokes the node and receives the response.
+
+================================================================================
+3. WHAT HAPPENS INSIDE THE GMAIL AGENT SERVICE
+================================================================================
+
+The Gmail agent is a fully self-contained service. Here's what happens when it
+receives the HTTP request:
+
+SERVICE RECEPTION:
+------------------
+The HTTP request arrives at agents/gmail/service.py, which is a FastAPI
+application. The service exposes the Gmail graph via LangServe:
+- Line 67-71: add_routes(app, gmail_graph, path="/graph")
+- This creates the /graph/invoke endpoint that RemoteGraph calls
+
+The FastAPI app is defined at line 42-46 with title "Gmail Agent Service".
+
+GRAPH EXECUTION:
+---------------
+The gmail_graph is built by agents/gmail/graph.py in the function
+build_gmail_graph() (line 28). This graph:
+1. Has a single node called "gmail" (line 103)
+2. The node function is gmail_node() (line 43)
+3. Entry point is "gmail" (line 104)
+4. Has a hard edge to END (line 105)
+
+GMAIL NODE FUNCTION:
+--------------------
+The gmail_node function (agents/gmail/graph.py, line 43) does:
+1. Resets tool usage tracker (line 51: reset_tool_usage())
+2. Extracts messages from AgentState (line 53)
+3. Extracts context (line 54) - but does not use it for business logic
+4. Passes all messages to the agent chain (line 58: messages_for_agent = list(messages))
+5. Invokes the Gmail agent chain (line 64: gmail_chain.invoke())
+6. Extracts the response message (lines 67-72)
+7. Optionally extends completion contract with tool_used flag (lines 79-91)
+8. Returns the response in AgentState format (lines 96-99)
+
+The graph node is a minimal wrapper - it does NOT:
+- Parse or validate completion contracts
+- Modify the agent's response
+- Add business logic
+- Enforce any rules
+- Inspect email contents
+- Validate attachments
+
+It only:
+- Invokes the agent chain
+- Passes through the response
+- Optionally adds tool_used flag to completion contract if present
+
+AGENT CHAIN EXECUTION:
+----------------------
+The gmail_chain is built by agents/gmail/gmail_agent.py in the function
+build_gmail_agent() (line 194). This creates an agent using:
+- LLM from config (agents/gmail/config.py)
+- Tools: [gmail_search, gmail_send, read_file_content] (line 202)
+- System prompt: SYSTEM_PROMPT (defined lines 15-187)
+- Tool usage tracker: _tool_usage_tracker (line 204)
+
+The agent chain (created by agents/gmail/base_agent.py, create_agent function):
+1. Receives messages from the graph node
+2. Processes them through the LLM with tools bound
+3. The LLM analyzes conversation history to infer intent
+4. The LLM may call gmail_search or gmail_send based on intent
+5. The LLM generates a response based on tool results
+6. Returns an AIMessage with the final response (completion contract)
+
+INTENT CLASSIFICATION:
+----------------------
+The Gmail agent's system prompt (gmail_agent.py, lines 15-187) instructs the
+LLM to classify user intent FIRST before calling any tool (lines 25-52).
+
+The intent must be ONE of:
+- "search_email" → user wants to search, find, or read emails
+- "send_email" → user wants to send an email
+
+Intent classification rules (lines 36-45):
+- Intent = "search_email" if request includes: search, find, read, look for, etc.
+- Intent = "send_email" if request includes: send, email, forward, attach, etc.
+
+The LLM uses natural language understanding of the conversation history to
+classify intent. Human messages are the PRIMARY signal (line 52).
+
+TOOL ROUTING:
+-------------
+Based on intent classification, the agent MUST follow hard constraints (lines 58-76):
+- IF intent = "search_email": MUST call gmail_search, MUST NOT call gmail_send
+- IF intent = "send_email": MUST call gmail_send
+
+The agent extracts:
+- For search: search criteria (sender, subject, date, keywords) from user request
+- For send: recipient email, subject, body text from user request
+
+All business logic for intent inference, tool selection, and parameter extraction
+lives inside the Gmail agent. The orchestrator does not participate in these
+decisions.
+
+TOOL EXECUTION:
+---------------
+If the LLM decides to use gmail_send:
+- The tool is defined in agents/gmail/tools.py (line 128)
+- It loads Gmail OAuth credentials (line 147)
+- It builds a Gmail API service (line 148)
+- It creates a MIME message (line 150)
+- It attaches files if provided (lines 157-173)
+- It sends the email via Gmail API (lines 179-182)
+- It returns status: {"status": "sent", "to": "...", "subject": "..."}
+
+If the LLM decides to use gmail_search:
+- The tool is defined in agents/gmail/tools.py (line 51)
+- It loads Gmail OAuth credentials (line 70)
+- It builds a Gmail API service (line 71)
+- It searches Gmail using the query (lines 73-77)
+- It retrieves email details (lines 85-89)
+- It extracts email body and headers (lines 91-115)
+- It returns email data or {"email": None, "reason": "not_found"}
+
+All tool execution happens inside the Gmail agent service. The orchestrator
+does not know or care which tools are called or how they work.
+
+COMPLETION CONTRACT GENERATION:
+--------------------------------
+The Gmail agent's system prompt (gmail_agent.py, lines 105-162) instructs the
+LLM to return a completion contract after calling a tool. The contract must be
+pure JSON in one of these formats:
+
+For search (lines 110-120):
+{
+  "completed_capability": "gmail",
+  "data": {
+    "action": "search",
+    "result": "found",
+    "subject": "...",
+    "from": "...",
+    "content": "..."
+  }
+}
+
+For send with attachment (lines 131-141):
+{
+  "completed_capability": "gmail",
+  "data": {
+    "action": "send",
+    "status": "sent",
+    "to": "...",
+    "subject": "...",
+    "attachment": true
+  }
+}
+
+For send without attachment (lines 143-153):
+{
+  "completed_capability": "gmail",
+  "data": {
+    "action": "send",
+    "status": "sent",
+    "to": "...",
+    "subject": "...",
+    "attachment": false
+  }
+}
+
+The system prompt is very strict: the response MUST be ONLY JSON, no text before
+or after (line 156). The contract MUST be truthful (lines 157-161).
+
+AUTHORITATIVE BEHAVIOR:
+-----------------------
+The Gmail agent is fully authoritative:
+- No external system validates its output
+- No external system modifies its behavior
+- No external system enforces completion contracts
+- The agent itself decides when email sending is complete
+- The agent itself generates the completion contract
+- The graph wrapper only passes through the agent's output unchanged
+
+All business logic (intent classification, tool selection, parameter extraction,
+email sending, completion contract generation) lives inside the Gmail agent.
+The orchestrator only routes execution and reads completion signals.
+
+================================================================================
+4. HOW THE GMAIL AGENT HANDLES ATTACHMENTS AND FILES
+================================================================================
+
+The Gmail agent handles file attachments by reading completion contracts from
+previous agents in the conversation history. Here's how it works:
+
+DISCOVERY FROM CONVERSATION HISTORY:
+-------------------------------------
+The Gmail agent does NOT receive file paths via:
+- Shared filesystem with orchestrator
+- Context dictionary injection
+- Direct parameter passing
+- Environment variables
+
+Instead, it discovers file references by reading completion contracts from
+previous agents in the messages array.
+
+When DocumentCreator completes, it returns a completion contract like:
+{
+  "completed_capability": "create_document",
+  "data": {
+    "file_path": "outputs/report_20260117_123456.md",
+    "abs_file_path": "/absolute/path/to/outputs/report_20260117_123456.md"
+  }
+}
+
+This completion contract is added to the messages array as an AIMessage. When
+the Gmail agent receives the conversation history, it can read this message
+to discover the file path.
+
+SYSTEM PROMPT INSTRUCTIONS:
+---------------------------
+The Gmail agent's system prompt (gmail_agent.py, lines 84-97) instructs the LLM:
+- Search conversation history for DocumentCreator completion contract
+- Look for the structure with "completed_capability": "create_document"
+- Extract "data.abs_file_path" if present (preferred for cross-service compatibility)
+- Otherwise use "data.file_path" as fallback
+- Use that exact file_path string when calling gmail_send with attachments=[file_path]
+
+The prompt explicitly states (line 97):
+  "Do NOT validate file existence - assume files provided by DocumentCreator exist"
+
+This means the Gmail agent trusts that files created by DocumentCreator exist.
+It does not validate file existence before attempting to attach.
+
+TOOL EXECUTION WITH ATTACHMENTS:
+---------------------------------
+When the LLM calls gmail_send with attachments parameter, the tool function
+(agents/gmail/tools.py, line 128) handles file attachment:
+
+1. The tool receives attachments as a list of file paths (line 132)
+2. For each file path (line 157):
+   - It checks if file exists (line 158) - raises FileNotFoundError if not
+   - It reads the file (line 164)
+   - It creates a MIME attachment part (lines 162-171)
+   - It attaches the part to the message (line 173)
+
+The file path is resolved relative to the Gmail agent service's working directory.
+If the Gmail agent runs on a different machine, the file must be accessible
+from that machine's filesystem (e.g., via shared storage, network mount, etc.).
+
+The tool does NOT:
+- Validate file contents
+- Check file permissions
+- Verify file format
+- Modify file paths
+
+It simply reads the file and attaches it to the email.
+
+CROSS-SERVICE COMPATIBILITY:
+-----------------------------
+The system uses absolute file paths (abs_file_path) for cross-service compatibility.
+When DocumentCreator creates a file, it returns both:
+- file_path: relative path (e.g., "outputs/report_20260117_123456.md")
+- abs_file_path: absolute path (e.g., "/Users/.../outputs/report_20260117_123456.md")
+
+The Gmail agent prefers abs_file_path (gmail_agent.py, line 93) because:
+- It works across different working directories
+- It works when agents run on different machines
+- It avoids path resolution issues
+
+However, if the Gmail agent runs on a different machine, the file must still be
+accessible from that machine. The system does NOT automatically copy files
+between services - this must be handled by shared storage or deployment configuration.
+
+OPTIONAL ATTACHMENTS:
+---------------------
+File attachments are OPTIONAL, not mandatory (gmail_agent.py, line 82).
+
+If intent = "send_email" and NO file_path exists in conversation history:
+- The agent calls gmail_send without attachments parameter (line 100)
+- This is valid and expected - plain emails are acceptable (line 101)
+- The agent does NOT return failure - sending without attachment is success (line 102)
+
+The completion contract reflects this truthfully:
+- "attachment": true if attachment was used
+- "attachment": false if no attachment was used
+
+All validation and decision-making about attachments happens inside the Gmail agent.
+The orchestrator does not know or care whether attachments are used.
+
+================================================================================
+5. HOW THE GMAIL AGENT RETURNS ITS RESPONSE
+================================================================================
+
+The Gmail agent returns its response through the same HTTP channel it received
+the request:
+
+RESPONSE FORMAT:
+----------------
+The gmail_node function returns a dictionary matching AgentState:
+{
+  "messages": [AIMessage(content="...")],
+  "context": {...}
+}
+
+The messages array contains a single AIMessage with the agent's response.
+The response content is the completion contract JSON string.
+
+COMPLETION CONTRACT STRUCTURE:
+-------------------------------
+The AIMessage.content contains pure JSON. For a successful email send with
+attachment, it looks like:
+{
+  "completed_capability": "gmail",
+  "data": {
+    "action": "send",
+    "status": "sent",
+    "to": "user@example.com",
+    "subject": "Report",
+    "attachment": true,
+    "tool_used": true
+  }
+}
+
+For a search operation:
+{
+  "completed_capability": "gmail",
+  "data": {
+    "action": "search",
+    "result": "found",
+    "subject": "Report",
+    "from": "sender@example.com",
+    "content": "Email body text...",
+    "tool_used": true
+  }
+}
+
+The "completed_capability" field is the critical signal. It must be exactly
+"gmail" for the Supervisor to recognize completion.
+
+The "data" field contains operation-specific information:
+- For send: status, to, subject, attachment flag
+- For search: action, result, email details
+
+The graph wrapper may add "tool_used": true if a tool was called (graph.py,
+lines 79-91). This is for observability, not for business logic.
+
+HTTP RESPONSE:
+--------------
+LangServe automatically:
+1. Serializes the AgentState return value to JSON
+2. Sends it back as HTTP response body
+3. Uses standard LangServe response format
+
+The response is sent back to the RemoteGraph caller (the main system graph).
+
+RESPONSE MERGING:
+-----------------
+When RemoteGraph receives the HTTP response:
+1. It deserializes the JSON back into AgentState
+2. It merges the returned state into the main graph's state
+3. Specifically, it appends the returned messages to the global messages array
+4. It updates context if provided
+
+The main graph's state now contains:
+- Original user message
+- Previous agent responses (Researcher, DocumentCreator)
+- Gmail's response message (with completion contract)
+- Updated context
+
+The Gmail completion contract is now part of the conversation history, available
+for any subsequent agents or for final user display.
+
+================================================================================
+6. HOW THE SUPERVISOR KNOWS GMAIL IS FINISHED
+================================================================================
+
+The Supervisor detects completion by reading the completion contract from the
+Gmail's response message:
+
+MESSAGE INSPECTION:
+-------------------
+After the Gmail agent returns, control flows back to the Supervisor (because of
+the edge: graph.add_edge("Gmail", "Supervisor") in build_graph.py, line 58).
+
+The supervisor_node function (supervisor.py, line 21) then:
+1. Gets all messages from state (line 93: messages = state.get("messages", []))
+2. Finds the last agent message (lines 114-133)
+3. Extracts content from that message (line 118, 126, or 132)
+
+COMPLETION CONTRACT EXTRACTION:
+-------------------------------
+The Supervisor uses agents/utils.py, extract_completed_capability() function
+(line 127) to read the completion contract:
+1. It calls parse_completion_message() (line 18) to parse JSON from message content
+2. It looks for the "completed_capability" field
+3. If found, it returns the capability string (e.g., "gmail")
+
+In supervisor.py, line 136:
+  capability = extract_completed_capability(last_agent_content)
+
+If capability is "gmail", the Supervisor knows the Gmail agent completed.
+
+NO CONTENT INSPECTION:
+---------------------
+The Supervisor does NOT:
+- Read the email recipient (data.to)
+- Read the email subject (data.subject)
+- Check if attachment was used (data.attachment)
+- Inspect email contents
+- Validate email sending
+- Check Gmail API responses
+- Inspect any internal Gmail logic
+
+It ONLY reads the "completed_capability" field. This is the black-box contract:
+the Supervisor treats agents as opaque services that signal completion via
+the completion contract, but does not inspect their internal outputs.
+
+The Supervisor does not know or care:
+- Whether an email was actually sent
+- Whether attachments were included
+- What the email content was
+- Whether the Gmail API call succeeded or failed (unless the agent signals failure)
+
+The Gmail agent is authoritative - if it says "completed_capability": "gmail",
+the Supervisor trusts that the Gmail task is complete.
+
+PROGRESS TRACKING:
+------------------
+When capability = "gmail" is detected (supervisor.py, line 143):
+1. The Supervisor adds "gmail" to completed_capabilities list (line 145)
+2. It increments current_step_index (line 147)
+3. It resets retry count for this capability (lines 149-150)
+4. It logs the completion (lines 154-156)
+
+The Supervisor then checks if all steps in the plan are complete (line 186).
+If not, it dispatches the next capability in the plan. If all steps are complete,
+it returns {"next": "FINISH"}.
+
+================================================================================
+7. HOW CONTROL RETURNS TO THE SYSTEM GRAPH
+================================================================================
+
+After the Gmail agent completes and the Supervisor detects completion, control
+flows back into the main system graph for continued execution or termination:
+
+STATE MERGING:
+--------------
+The RemoteGraph merges the Gmail's response into the main graph state:
+- The Gmail's AIMessage is appended to the global messages array
+- The conversation history now includes the email sending results
+- Context is updated if the Gmail agent returned any
+
+The main graph state now contains the complete conversation flow:
+- User request
+- Researcher results
+- DocumentCreator file creation
+- Gmail email sending confirmation
+
+SUPERVISOR RE-INVOCATION:
+-------------------------
+Because of the edge "Gmail" → "Supervisor" (build_graph.py, line 58),
+the Supervisor node is automatically invoked again after the Gmail agent finishes.
+
+The Supervisor then:
+1. Detects "gmail" completion (as explained in section 6)
+2. Advances to the next step in the plan (if any)
+3. Returns {"next": "<next_agent>"} or {"next": "FINISH"}
+
+ROUTING CONTINUATION:
+---------------------
+The conditional edge (build_graph.py, lines 61-71) routes based on state["next"]:
+- If next = "Researcher", routes to Researcher
+- If next = "DocumentCreator", routes to DocumentCreator
+- If next = "Gmail", routes to Gmail
+- If next = "DirectAnswer", routes to DirectAnswer
+- If next = "FINISH", ends the workflow
+
+If the plan was ["research", "create_document", "gmail"] and all three are
+complete, the Supervisor returns {"next": "FINISH"} and the workflow terminates.
+
+NO BUSINESS LOGIC:
+------------------
+At this stage, no business logic is executed:
+- The Supervisor does not process email contents
+- The Supervisor does not validate email sending
+- The Supervisor does not check attachments
+- The Supervisor does not inspect Gmail API responses
+
+The Supervisor only:
+- Tracks progress (which capabilities are completed)
+- Routes to next agent (or FINISH)
+- Detects completion (via completion contracts)
+
+The actual business work (email searching, email sending, file attachment)
+happens inside the Gmail agent service, not in the orchestrator.
+
+FINAL TERMINATION:
+------------------
+When all steps are complete, the Supervisor returns {"next": "FINISH"}.
+The conditional edge routes to END, and the workflow terminates.
+
+The final state is returned to main.py, which can then display results to the user.
+The final messages array contains all agent responses, including the Gmail
+completion contract with email sending confirmation.
+
+================================================================================
+SUMMARY
+================================================================================
+
+The Gmail agent flow is a distributed service invocation:
+
+1. User request → main.py → Supervisor plans → Routes to Gmail
+2. RemoteGraph makes HTTP POST to http://localhost:8000/graph/invoke
+3. Gmail service receives AgentState, processes via agent chain
+4. Agent classifies intent (search vs send), uses appropriate tool
+5. Agent discovers file paths from DocumentCreator completion contract in messages
+6. Agent calls gmail_send with attachments if file_path exists
+7. Agent generates completion contract with "completed_capability": "gmail"
+8. Gmail returns AgentState with completion contract in AIMessage.content
+9. RemoteGraph merges response into main graph state
+10. Supervisor reads "completed_capability": "gmail" from message
+11. Supervisor advances plan, routes to next agent or FINISH
+
+Key architectural points:
+- Gmail is a separate HTTP service (not a local function)
+- Gmail is authoritative (no external validation)
+- Gmail discovers file paths from conversation history (not shared filesystem)
+- Gmail handles all business logic internally (intent, tools, attachments)
+- Supervisor only reads completion signals (black-box contract)
+- All business logic lives inside the Gmail agent
+- The orchestrator only routes and tracks progress
+
+This architecture allows:
+- Gmail agent to run on separate machines
+- Gmail agent to scale independently
+- Gmail agent to be developed/deployed separately
+- Loose coupling through completion contract interface
+- No shared filesystem assumptions (uses absolute paths)
+- No business logic in orchestrator
+
+The system maintains strict separation: the orchestrator routes execution and
+tracks progress, while the Gmail agent owns all email-related business logic
+and side effects.

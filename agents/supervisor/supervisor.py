@@ -9,40 +9,13 @@ import json
 
 from models.schemas import Plan
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from models.state import AgentState
 from config.config import llm
 import agents.registry as registry
-from agents.utils import extract_completed_capability, parse_completion_message
+from agents.utils import extract_completed_capability
 
 logger = logging.getLogger(__name__)
-
-
-def _infer_gmail_mode(user_request: str) -> str:
-    """
-    Infer gmail_mode from user request.
-    
-    Returns:
-        "attachment" - if user wants to send file as attachment
-        "inline" - if user wants to send file content in email body
-        "plain" - if user just wants to send email (no file mentioned)
-    """
-    request_lower = user_request.lower()
-    
-    # Check for attachment mode keywords
-    attachment_keywords = ["send the file", "attach", "with attachment", "attach the file", 
-                          "send file", "file attached", "attach file"]
-    if any(keyword in request_lower for keyword in attachment_keywords):
-        return "attachment"
-    
-    # Check for inline mode keywords
-    inline_keywords = ["send the content", "email the content", "content of the file",
-                      "file content", "content in email", "put content in email"]
-    if any(keyword in request_lower for keyword in inline_keywords):
-        return "inline"
-    
-    # Default to plain email
-    return "plain"
 
 
 def supervisor_node(state: AgentState):
@@ -104,15 +77,8 @@ Any deviation is considered a system failure.
 
         ctx["plan"] = steps
         ctx["current_step_index"] = 0
-        ctx["original_request"] = original_request
         ctx["completed_capabilities"] = []  # Track completed capabilities to prevent duplicates
         ctx["agent_retry_count"] = {}  # Track retry count per agent to prevent infinite loops
-        
-        # Infer gmail_mode from user request (if gmail is in plan)
-        if "gmail" in steps:
-            gmail_mode = _infer_gmail_mode(original_request)
-            ctx["gmail_mode"] = gmail_mode
-            logger.info(f"Supervisor: Inferred gmail_mode={gmail_mode} from user request")
         
         logger.info(f"Supervisor: Created plan with {len(steps)} steps: {steps}")
 
@@ -167,57 +133,22 @@ Any deviation is considered a system failure.
                 break
     
     if last_agent_content:
-        logger.info(f"Supervisor: Checking agent message ({len(last_agent_content)} chars): {last_agent_content[:200]}...")
         capability = extract_completed_capability(last_agent_content)
         if capability:
             logger.info(f"Supervisor: Detected completion contract: capability={capability}")
-        else:
-            logger.warning(f"Supervisor: Agent returned message but no completion contract found. Content preview: {last_agent_content[:300]}...")
     else:
-        logger.warning(f"Supervisor: No agent message found. Total messages: {len(messages)}")
+        logger.debug(f"Supervisor: No agent message found. Total messages: {len(messages)}")
     
     # If agent emitted a completion contract, trust it and advance
     if capability:
         if capability not in completed_capabilities:
             completed_capabilities.append(capability)
             ctx["completed_capabilities"] = completed_capabilities
-            ctx["last_completed_capability"] = capability
             ctx["current_step_index"] = idx + 1
             # Reset retry count for this capability
             if capability in agent_retry_count:
                 del agent_retry_count[capability]
             ctx["agent_retry_count"] = agent_retry_count
-            
-            # Extract file_path from DocumentCreator completion contract (OPTIONAL)
-            # Prefer abs_file_path for cross-service compatibility
-            # Store it if present, but don't fail if missing
-            if capability == "create_document" and last_agent_content:
-                try:
-                    contract = json.loads(last_agent_content.strip())
-                    if isinstance(contract, dict):
-                        data = contract.get("data", {})
-                        # Prefer absolute path for cross-service compatibility
-                        file_path = data.get("abs_file_path") or data.get("file_path")
-                        if file_path:
-                            ctx["file_path"] = file_path
-                            logger.info(f"Supervisor: Extracted file_path from DocumentCreator: {file_path} (absolute: {bool(data.get('abs_file_path'))})")
-                except (json.JSONDecodeError, AttributeError, KeyError):
-                    # Try to extract JSON from embedded text
-                    json_start = last_agent_content.find('{')
-                    json_end = last_agent_content.rfind('}')
-                    if json_start != -1 and json_end != -1:
-                        try:
-                            contract = json.loads(last_agent_content[json_start:json_end+1])
-                            if isinstance(contract, dict):
-                                data = contract.get("data", {})
-                                # Prefer absolute path for cross-service compatibility
-                                file_path = data.get("abs_file_path") or data.get("file_path")
-                                if file_path:
-                                    ctx["file_path"] = file_path
-                                    logger.info(f"Supervisor: Extracted file_path from DocumentCreator: {file_path} (absolute: {bool(data.get('abs_file_path'))})")
-                        except (json.JSONDecodeError, KeyError):
-                            pass
-                # Note: If file_path extraction fails, continue normally - it's optional
             
             idx += 1
             logger.info(
@@ -309,34 +240,7 @@ Any deviation is considered a system failure.
         f"(attempt {retry_count + 1}/{MAX_RETRIES})"
     )
 
-    # === STEP 5: Inject completion contract for Gmail if needed ===
-    # If dispatching to Gmail with attachment mode and file_path exists,
-    # inject the DocumentCreator completion contract into messages
-    injected_messages = []
-    if capability == "gmail":
-        gmail_mode = ctx.get("gmail_mode", "plain")
-        file_path = ctx.get("file_path")
-        
-        if gmail_mode == "attachment" and file_path:
-            # Inject DocumentCreator completion contract as a message
-            # This allows Gmail agent to parse file_path from conversation history
-            # Use the absolute path if available (stored in context)
-            completion_contract = {
-                "completed_capability": "create_document",
-                "data": {
-                    "file_path": file_path,
-                    "abs_file_path": file_path  # Supervisor already prefers abs_file_path, so both are the same
-                }
-            }
-            contract_message = AIMessage(content=json.dumps(completion_contract, indent=2))
-            injected_messages = [contract_message]
-            logger.info(
-                f"Supervisor: Injecting DocumentCreator completion contract with file_path={file_path} "
-                f"(absolute path) before Gmail dispatch (attachment mode)"
-            )
-
     return {
         "next": agent_name,
         "context": ctx,
-        "messages": injected_messages,  # Inject messages if needed
     }
