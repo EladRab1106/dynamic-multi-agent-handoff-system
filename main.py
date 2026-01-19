@@ -4,10 +4,11 @@ from models.state import AgentState
 from graph.capability_discovery import discover_capabilities
 from graph.build_graph import build_graph
 from dotenv import load_dotenv
+from config.logging_config import setup_logging
+
 load_dotenv()
+setup_logging()
 
-
-logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
 
 

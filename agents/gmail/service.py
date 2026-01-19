@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from agents.gmail.gmail_agent import build_gmail_agent
 from agents.gmail.graph import build_gmail_graph
-from tools.gmail_tool import gmail_tool
+from agents.gmail.tools import gmail_search, gmail_send
 
 
 class SendEmailRequest(BaseModel):
@@ -105,15 +105,16 @@ async def metadata():
 @app.post("/send-email", response_model=SendEmailResponse)
 async def send_email(request: SendEmailRequest):
     try:
-        result = gmail_tool.invoke({
-            "action": "send",
-            "recipient": request.recipient,
+        # Use the agent-local gmail_send tool so the agent is fully self-contained
+        result = gmail_send.invoke({
+            "to": request.recipient,
             "subject": request.subject,
             "body": request.body,
             "attachments": request.attachments or [],
         })
-        
-        if result == "EMAIL_SENT":
+
+        # gmail_send returns a dict like {"status": "sent", "to": ..., "subject": ...}
+        if isinstance(result, dict) and result.get("status") == "sent":
             return SendEmailResponse(
                 status="success",
                 message="Email sent successfully"
@@ -133,20 +134,27 @@ async def send_email(request: SendEmailRequest):
 @app.post("/read-email", response_model=ReadEmailResponse)
 async def read_email(request: ReadEmailRequest):
     try:
-        result = gmail_tool.invoke({
-            "action": "search",
-            "query": request.query,
-        })
-        
-        if result == "NO_RESULTS":
+        # Use the agent-local gmail_search tool so the agent is fully self-contained
+        result = gmail_search.invoke({"query": request.query})
+
+        # gmail_search returns {"email": {...}} or {"email": None, "reason": "not_found"}
+        email_data = result.get("email") if isinstance(result, dict) else None
+        if not email_data:
             return ReadEmailResponse(
                 status="success",
                 results="No emails found matching the query"
             )
         else:
+            # Format a simple human-readable string from the email data
+            formatted = (
+                f"FROM: {email_data.get('from', '')}\n"
+                f"SUBJECT: {email_data.get('subject', '')}\n"
+                f"DATE: {email_data.get('date', '')}\n\n"
+                f"{email_data.get('body', '')}"
+            )
             return ReadEmailResponse(
                 status="success",
-                results=result
+                results=formatted
             )
     except Exception as e:
         raise HTTPException(
