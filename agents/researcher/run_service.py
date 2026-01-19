@@ -5,10 +5,10 @@ This agent should be run as an independent LangGraph Server instance.
 Each agent can live in its own repository and be deployed independently.
 
 To run this agent:
-    langgraph dev --port 8001
+    langgraph dev --port 8080
 
 Or in production:
-    langgraph serve --port 8001
+    langgraph serve --port 8080
 
 The agent exposes its graph via LangGraph Server's native endpoints:
 - POST /runs - Execute graph runs
@@ -29,10 +29,10 @@ if __name__ == "__main__":
     print("Researcher Agent - LangGraph Server")
     print("=" * 60)
     print("\nTo run this agent, use LangGraph CLI:")
-    print("  langgraph dev --port 8001")
+    print("  langgraph dev --port 8080")
     print("\nOr for production:")
-    print("  langgraph serve --port 8001")
+    print("  langgraph serve --port 8080")
     print("\nThe agent will be accessible at:")
-    print("  http://localhost:8001")
+    print("  http://localhost:8080")
     print("\nGraph ID: researcher")
     print("=" * 60)

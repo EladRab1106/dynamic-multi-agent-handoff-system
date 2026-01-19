@@ -10,10 +10,12 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from config.logging_config import setup_logging
 
 # Load .env from this agent directory
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
+setup_logging()
 
 # ===== OpenAI / LLM =====
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

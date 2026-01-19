@@ -39,7 +39,7 @@ def build_graph(capability_index: Dict[str, str]):
     # Create RemoteGraph references to all agents
     # RemoteGraph uses blocking execution when invoked as a node in a graph
     # It waits for the remote agent to complete before returning
-    researcher_service_url = os.getenv("RESEARCHER_SERVICE_URL", "http://localhost:8001")
+    researcher_service_url = os.getenv("RESEARCHER_SERVICE_URL", "https://researcher-agent-724942100863.us-central1.run.app/")
     researcher_remote = RemoteGraph("researcher", url=researcher_service_url)
 
     document_creator_service_url = os.getenv("DOCUMENT_CREATOR_SERVICE_URL", "http://localhost:8002")
