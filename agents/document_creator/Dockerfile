@@ -1,12 +1,12 @@
 # Dockerfile for Document Creator Agent Service
-# Runs on port 8002
+# Runs on port 8080
 
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
+# Copy requirements and install dependencies (per-agent requirements)
+COPY agents/document_creator/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy project files (maintaining structure)
@@ -19,8 +19,12 @@ COPY *.py ./
 # Create outputs directory for generated documents
 RUN mkdir -p outputs
 
-# Expose the port the agent uses
-EXPOSE 8002
+# Switch to the agent directory so langgraph can find langgraph.json
+WORKDIR /app/agents/document_creator
 
-# Start the agent using its existing run_service entrypoint
-CMD ["python", "-m", "agents.document_creator.run_service"]
+# Expose the port the agent uses
+EXPOSE 8080
+
+# Start the Document Creator as a LangGraph Agent Server
+# Use 0.0.0.0 so the container port is accessible from the host
+CMD ["langgraph", "dev", "--host", "0.0.0.0", "--port", "8080"]

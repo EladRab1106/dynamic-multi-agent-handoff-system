@@ -190,11 +190,30 @@ def _fetch_agent_metadata(service_url: str, timeout: int = 5) -> Optional[Dict]:
             "graph_id": "gmail",
             "capabilities": ["gmail"]
         },
-        8003: {
-            "agent_name": "DirectAnswer",
-            "graph_id": "direct_answer",
-            "capabilities": ["direct_answer"]
+    }
+
+    # Host-based mapping fallback for agents that are not addressable by port (e.g. Cloud Run)
+    HOST_METADATA_MAP = {
+        # Researcher agent on Cloud Run
+        "researcher-agent-724942100863.us-central1.run.app": {
+            "agent_name": "Researcher",
+            "graph_id": "researcher",
+            "capabilities": ["research"],
         },
+        # Gmail agent on Cloud Run
+        "gmail-agent-724942100863.us-central1.run.app": {
+            "agent_name": "Gmail",
+            "graph_id": "gmail",
+            "capabilities": ["gmail"],
+        },
+        # Document Creator agent on Cloud Run
+        "document-creator-agent-724942100863.us-central1.run.app": {
+            "agent_name": "DocumentCreator",
+            "graph_id": "document_creator",
+            "capabilities": ["create_document"],
+        },
+        # Note: Supervisor runs on Cloud Run as well, but it is not a capability-providing
+        # agent in the orchestration model, so it is intentionally omitted here.
     }
 
     try:
@@ -216,8 +235,8 @@ def _fetch_agent_metadata(service_url: str, timeout: int = 5) -> Optional[Dict]:
 
         if not graphs:
             logger.warning(f"No graphs found in /graphs response from {base_url}")
-            # Fall back to port-based mapping
-            return _try_port_based_fallback(base_url, PORT_METADATA_MAP)
+            # Fall back to static mapping (port- or host-based)
+            return _try_port_based_fallback(base_url, PORT_METADATA_MAP, HOST_METADATA_MAP)
 
         # Process each graph with strict validation
         for graph in graphs:
@@ -266,35 +285,38 @@ def _fetch_agent_metadata(service_url: str, timeout: int = 5) -> Optional[Dict]:
                 "capabilities": capabilities,
             }
 
-        # No valid graphs found, try port-based fallback
-        logger.debug(f"No valid graphs with metadata found at {base_url}, trying port-based fallback")
-        return _try_port_based_fallback(base_url, PORT_METADATA_MAP)
+        # No valid graphs found, try static fallback
+        logger.debug(f"No valid graphs with metadata found at {base_url}, trying static fallback (port/host)")
+        return _try_port_based_fallback(base_url, PORT_METADATA_MAP, HOST_METADATA_MAP)
 
     except requests.exceptions.ConnectionError as e:
         logger.warning(f"Connection error for {base_url}: {e}")
-        return _try_port_based_fallback(base_url, PORT_METADATA_MAP)
+        return _try_port_based_fallback(base_url, PORT_METADATA_MAP, HOST_METADATA_MAP)
     except requests.exceptions.Timeout as e:
         logger.warning(f"Timeout error for {base_url}: {e}")
-        return _try_port_based_fallback(base_url, PORT_METADATA_MAP)
+        return _try_port_based_fallback(base_url, PORT_METADATA_MAP, HOST_METADATA_MAP)
     except requests.RequestException as e:
-        # For 404 or other HTTP errors, try port-based fallback
+        # For 404 or other HTTP errors, try static fallback
         status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
-        logger.debug(f"Request error for {base_url} (status={status_code}): {e}, trying port-based fallback")
-        return _try_port_based_fallback(base_url, PORT_METADATA_MAP)
+        logger.debug(f"Request error for {base_url} (status={status_code}): {e}, trying static fallback (port/host)")
+        return _try_port_based_fallback(base_url, PORT_METADATA_MAP, HOST_METADATA_MAP)
     except Exception as e:
         logger.warning(f"Unexpected error for {base_url}: {e}", exc_info=True)
-        return _try_port_based_fallback(base_url, PORT_METADATA_MAP)
+        return _try_port_based_fallback(base_url, PORT_METADATA_MAP, HOST_METADATA_MAP)
 
 
-def _try_port_based_fallback(base_url: str, port_map: Dict[int, Dict]) -> Optional[Dict]:
+def _try_port_based_fallback(base_url: str, port_map: Dict[int, Dict], host_map: Optional[Dict[str, Dict]] = None) -> Optional[Dict]:
     """
-    Fallback: Use port-based mapping if /graphs endpoint is unavailable.
+    Fallback: Use static mapping (port- or host-based) if /graphs endpoint is unavailable.
     
     This is a temporary fallback until all agents properly expose metadata via /graphs.
     """
     try:
         parsed = urlparse(base_url)
         port = parsed.port
+        host = parsed.hostname
+
+        # Prefer explicit port-based mapping when available
         if port and port in port_map:
             metadata = port_map[port]
             logger.info(
@@ -302,6 +324,15 @@ def _try_port_based_fallback(base_url: str, port_map: Dict[int, Dict]) -> Option
                 f"agent_name={metadata['agent_name']}, capabilities={metadata['capabilities']}"
             )
             return metadata
+
+        # Fallback to host-based mapping for services without explicit ports (e.g. Cloud Run)
+        if host_map and host and host in host_map:
+            metadata = host_map[host]
+            logger.info(
+                f"Using host-based metadata fallback for {base_url} (host {host}): "
+                f"agent_name={metadata['agent_name']}, capabilities={metadata['capabilities']}"
+            )
+            return metadata
     except Exception as e:
-        logger.debug(f"Port-based fallback failed for {base_url}: {e}")
+        logger.debug(f"Static fallback failed for {base_url}: {e}")
     return None
