@@ -9,22 +9,17 @@ WORKDIR /app
 COPY agents/document_creator/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files (maintaining structure)
-COPY agents/ ./agents/
-COPY config/ ./config/
-COPY models/ ./models/
-COPY tools/ ./tools/
-COPY *.py ./
+# Copy only the Document Creator agent code into the image (self-contained)
+COPY agents/document_creator/ ./
 
 # Create outputs directory for generated documents
 RUN mkdir -p outputs
 
-# Switch to the agent directory so langgraph can find langgraph.json
-WORKDIR /app/agents/document_creator
+# langgraph.json and all agent modules now live directly under /app
 
 # Expose the port the agent uses
 EXPOSE 8080
 
-# Start the Document Creator as a LangGraph Agent Server
+# Start the Document Creator as a LangGraph Agent Server from /app
 # Use 0.0.0.0 so the container port is accessible from the host
 CMD ["langgraph", "dev", "--host", "0.0.0.0", "--port", "8080"]

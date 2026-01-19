@@ -9,19 +9,14 @@ WORKDIR /app
 COPY agents/researcher/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files (maintaining structure)
-COPY agents/ ./agents/
-COPY config/ ./config/
-COPY models/ ./models/
-COPY tools/ ./tools/
-COPY *.py ./
+# Copy only the Researcher agent code into the image (self-contained)
+COPY agents/researcher/ ./
 
-# Switch to the agent directory so langgraph can find langgraph.json
-WORKDIR /app/agents/researcher
+# langgraph.json and all agent modules now live directly under /app
 
 # Expose the port the agent uses
 EXPOSE 8080
 
-# Start the Researcher as a LangGraph Agent Server
+# Start the Researcher as a LangGraph Agent Server from /app
 # Use 0.0.0.0 so the container port is accessible from the host
 CMD ["langgraph", "dev", "--host", "0.0.0.0", "--port", "8080"]
