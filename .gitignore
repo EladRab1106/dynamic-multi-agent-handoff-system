@@ -37,3 +37,5 @@ venv/
 **/.langgraph_api/
 
 
+agents/**/google-cloud-cli-*.tar.gz
+*.tar.gz
