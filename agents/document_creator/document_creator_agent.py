@@ -51,12 +51,18 @@ After successfully calling write_markdown_file, return ONLY this completion cont
   "completed_capability": "create_document",
   "data": {{
     "file_path": "<exact file_path returned by tool>",
-    "abs_file_path": "<exact abs_file_path returned by tool>"
+    "abs_file_path": "<exact abs_file_path returned by tool>",
+    "file_base64": "<exact file_base64 returned by tool>",
+    "filename": "<exact filename returned by tool>",
+    "mime_type": "<exact mime_type returned by tool>"
   }}
 }}
 
 The file_path field must contain the EXACT relative path returned by the tool.
 The abs_file_path field must contain the EXACT absolute path returned by the tool.
+The file_base64 field must contain the EXACT base64 string returned by the tool.
+The filename field must contain the EXACT filename returned by the tool.
+The mime_type field must contain the EXACT mime_type returned by the tool.
 
 ────────────────────
 CRITICAL RULES

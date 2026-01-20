@@ -14,6 +14,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import os
+import base64
+import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -24,6 +26,9 @@ except ImportError:
     # Fallback if imported outside agent context
     def mark_tool_used():
         pass
+
+
+logger = logging.getLogger(__name__)
 
 
 SCOPES_SEARCH = [
@@ -147,6 +152,8 @@ def gmail_send(
     creds = load_gmail_credentials(SCOPES_SEND)
     service = build("gmail", "v1", credentials=creds)
 
+    logger.info("gmail_send: preparing email", extra={"to": to, "subject": subject, "attachments_count": len(attachments or [])})
+
     msg = MIMEMultipart()
     msg["to"] = to
     msg["subject"] = subject
@@ -155,13 +162,30 @@ def gmail_send(
     msg.attach(MIMEText(body, "plain"))
 
     for file_path in attachments or []:
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Attachment not found: {file_path}")
+        # Normalize and resolve path for robust logging/validation
+        resolved_path = Path(file_path).expanduser().resolve()
+        resolved_file_path = resolved_path.as_posix()
 
-        filename = os.path.basename(file_path)
+        logger.info(
+            "gmail_send: processing attachment",
+            extra={"original_path": file_path, "resolved_path": resolved_file_path},
+        )
+
+        if not resolved_path.exists():
+            error_msg = f"Attachment not found: {resolved_file_path} (original: {file_path})"
+            logger.error(f"gmail_send: {error_msg}")
+            raise FileNotFoundError(error_msg)
+
+        file_size = resolved_path.stat().st_size
+        if file_size == 0:
+            error_msg = f"Attachment file is empty: {resolved_file_path}"
+            logger.error(f"gmail_send: {error_msg}")
+            raise ValueError(error_msg)
+
+        filename = resolved_path.name
         part = MIMEBase("application", "octet-stream")
 
-        with open(file_path, "rb") as f:
+        with open(resolved_file_path, "rb") as f:
             part.set_payload(f.read())
 
         encoders.encode_base64(part)
@@ -171,6 +195,13 @@ def gmail_send(
         )
 
         msg.attach(part)
+        # NOTE: logging.LogRecord already has a built-in "filename" attribute.
+        # Using "filename" in extra will raise KeyError("Attempt to overwrite 'filename' in LogRecord").
+        # Use a distinct key name for attachment filename to avoid breaking the tool.
+        logger.info(
+            "gmail_send: successfully attached file",
+            extra={"attachment_filename": filename, "attachment_size_bytes": file_size},
+        )
 
     raw = {
         "raw": urlsafe_b64encode(msg.as_bytes()).decode()
@@ -186,6 +217,79 @@ def gmail_send(
         "to": to,
         "subject": subject
     }
+
+
+@tool
+def materialize_base64_attachment(
+    filename: str,
+    file_base64: str,
+    subdir: str = "attachments"
+) -> Dict[str, Any]:
+    """
+    Decode a base64-encoded file and write it to disk so it can be attached to an email.
+
+    Args:
+        filename: Desired filename for the attachment (e.g., "report.md").
+        file_base64: Base64-encoded file content produced by the Document Creator agent.
+        subdir: Optional subdirectory under the base attachment directory (default: "attachments").
+
+    Returns:
+        {
+          "file_path": "relative/path/to/attachment",
+          "abs_file_path": "/absolute/path/to/attachment",
+          "size_bytes": <file_size_in_bytes>
+        }
+    """
+    mark_tool_used()
+
+    if not filename:
+        filename = "attachment.bin"
+
+    # Choose a base directory for attachments (can be overridden via env)
+    base_dir = Path(os.getenv("GMAIL_ATTACHMENT_DIR", "outputs")) / subdir
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = os.path.basename(filename)
+    target_path = base_dir / safe_name
+
+    # If file already exists, add a numeric suffix to avoid overwriting
+    counter = 1
+    while target_path.exists():
+        stem = Path(safe_name).stem
+        suffix = Path(safe_name).suffix
+        target_path = base_dir / f"{stem}_{counter}{suffix}"
+        counter += 1
+
+    try:
+        file_bytes = base64.b64decode(file_base64)
+    except Exception:
+        logger.exception("materialize_base64_attachment: failed to decode base64 content")
+        raise
+
+    target_path.write_bytes(file_bytes)
+    size_bytes = target_path.stat().st_size
+
+    abs_path = target_path.resolve()
+    result = {
+        "file_path": str(target_path),
+        "abs_file_path": abs_path.as_posix(),
+        "size_bytes": size_bytes,
+    }
+
+    # NOTE: logging.LogRecord already has a built-in "filename" attribute.
+    # Using "filename" in extra will raise KeyError("Attempt to overwrite 'filename' in LogRecord").
+    # Use a distinct key name (e.g. "attachment_filename") instead to avoid breaking the tool.
+    logger.info(
+        "materialize_base64_attachment: created attachment file",
+        extra={
+            "attachment_filename": safe_name,
+            "file_path": result["file_path"],
+            "abs_file_path": result["abs_file_path"],
+            "size_bytes": size_bytes,
+        },
+    )
+
+    return result
 
 
 @tool
