@@ -37,11 +37,10 @@ def build_document_creator_graph():
     document_creator_chain = build_document_creator_agent()
     
     def document_creator_node(state: AgentState) -> dict:
-        """
-        Minimal execution wrapper node.
-        
-        Invokes the Document Creator agent chain and passes through the output unchanged.
-        Agent is authoritative - no validation, no enforcement.
+        """Minimal execution wrapper node for Document Creator.
+
+        Adds basic logging so we can see when the node is invoked and what
+        kind of response shape we get back from the agent chain.
         """
         messages = state.get("messages", [])
         if not messages:

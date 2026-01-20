@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
@@ -8,6 +9,9 @@ from pydantic import BaseModel
 
 from agents.document_creator.document_creator_agent import build_document_creator_agent
 from agents.document_creator.graph import build_document_creator_graph
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentChatRequest(BaseModel):
@@ -82,10 +86,15 @@ async def metadata():
 
 @app.post("/chat", response_model=AgentChatResponse)
 async def chat_with_agent(request: AgentChatRequest):
+    logger.info("/chat endpoint called", extra={"message_preview": request.message[:200]})
     try:
         result = document_creator_agent_chain.invoke({
             "messages": [HumanMessage(content=request.message)]
         })
+        logger.info(
+            "Document creator agent chain invoked successfully from /chat",
+            extra={"result_type": str(type(result))},
+        )
         
         if hasattr(result, 'content'):
             response_text = result.content
@@ -100,6 +109,11 @@ async def chat_with_agent(request: AgentChatRequest):
         
         os.makedirs("outputs", exist_ok=True)
         file_path = f"outputs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        abs_file_path = os.path.abspath(file_path)
+        logger.info(
+            "Writing /chat response to report file",
+            extra={"file_path": file_path, "abs_file_path": abs_file_path},
+        )
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(response_text)
         
@@ -108,6 +122,7 @@ async def chat_with_agent(request: AgentChatRequest):
             file_path=file_path
         )
     except Exception as e:
+        logger.exception("Error processing /chat request")
         raise HTTPException(
             status_code=500,
             detail=f"Error processing chat request: {str(e)}"

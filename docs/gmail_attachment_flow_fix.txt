@@ -1,0 +1,183 @@
+Gmail Attachment Flow Fix - Summary
+===================================
+
+Overview
+--------
+This file documents the changes and debugging steps that were made to ensure that the multi-agent system can:
+1) Research a topic using the Researcher agent,
+2) Generate a report file with the Document Creator agent, and
+3) Have the Gmail agent reliably decode that report from base64, materialize it as a local file in its own container, and send it as an email attachment.
+
+The goal was to make attachment handling robust and observable, while keeping attachments optional (plain emails must still work when no file is available).
+
+High-Level Flow
+---------------
+1. The user issues a request like: "research the company nvidia, make report file on it and send the file via gmail".
+2. Supervisor plans capabilities: ["research", "create_document", "gmail"].
+3. Researcher uses Tavily to gather data and returns a research completion contract.
+4. Document Creator uses that research to write a markdown report to disk and returns a document completion contract containing:
+   - file_path
+   - abs_file_path
+   - file_base64
+   - filename
+   - mime_type
+5. Supervisor advances to the "gmail" capability.
+6. Gmail receives the full conversation history, including the Document Creator completion contract, and is responsible for:
+   - Decoding file_base64 into a local file in its own filesystem,
+   - Attaching this file via gmail_send,
+   - Sending a completion contract indicating that the gmail capability is done.
+
+Main Obstacles and Fixes
+------------------------
+
+1) Cross-Container File Access
+------------------------------
+**Problem:**
+Originally, the assumption that Gmail could read the report file directly from a path produced by the Document Creator agent is unsafe when agents run as separate services or containers.
+
+- Document Creator writes the report into its own container under something like `outputs/report_YYYYMMDD_HHMMSS.md`.
+- Gmail runs in a different container; that path is not guaranteed to exist there.
+
+**Solution:**
+Make the Document Creator's completion contract include a base64-encoded copy of the file contents (`file_base64`), and have Gmail reconstruct the file in its own filesystem:
+
+- Document Creator's tool `write_markdown_file`:
+  - Writes markdown to `outputs/<filename>.md`.
+  - Confirms the file exists and is non-empty.
+  - Reads the bytes and encodes them as base64.
+  - Returns:
+    - file_path (relative path in its own container)
+    - abs_file_path (absolute path in its own container)
+    - file_base64 (base64-encoded content)
+    - filename
+    - mime_type
+
+- Gmail's `materialize_base64_attachment` tool:
+  - Takes `filename` and `file_base64` from the Document Creator completion contract.
+  - Chooses an attachment directory inside Gmail's container (`outputs/attachments/` by default, or `GMAIL_ATTACHMENT_DIR` + subdir).
+  - Decodes base64 to bytes and writes to `outputs/attachments/<filename>`.
+  - Returns:
+    - file_path
+    - abs_file_path
+    - size_bytes
+
+With this, Gmail no longer depends on reading a file path from another container; it reconstructs the attachment locally from `file_base64`.
+
+
+2) Logging Conflicts with Reserved LogRecord Attributes
+------------------------------------------------------
+**Problem (materialize_base64_attachment):**
+
+`materialize_base64_attachment` tried to log using `extra={"filename": ...}`. The Python logging system's `LogRecord` type already has a built-in `filename` attribute. Providing `filename` in the `extra` dict causes a runtime `KeyError("Attempt to overwrite 'filename' in LogRecord")`.
+
+Because this exception happens inside the tool after writing the file, it breaks the tool before it can return a JSON result to the LLM. As a result, the Gmail agent's base agent wrapper catches the exception and logs an error, and the LLM never sees a successful tool output.
+
+**Fix:**
+
+- In `materialize_base64_attachment` logging, replace the `filename` key in `extra` with a non-conflicting key:
+  - Changed from `extra={"filename": safe_name, ...}`
+  - To `extra={"attachment_filename": safe_name, ...}`
+
+This preserves useful logging information while avoiding the reserved `filename` field.
+
+
+**Problem (gmail_send):**
+
+The same issue existed in `gmail_send` when logging successful attachment:
+
+- It logged `extra={"filename": filename, "size_bytes": file_size}`.
+- This again attempted to overwrite the logging `filename` attribute and caused `KeyError("Attempt to overwrite 'filename' in LogRecord")`.
+
+This meant the tool would:
+- Attach the file to the message,
+- Then crash while logging success,
+- So the LLM never got a normal success result, and the Supervisor never saw a proper gmail completion contract.
+
+**Fix:**
+
+- In `gmail_send`, change the logging keys to non-conflicting names:
+  - From: `extra={"filename": filename, "size_bytes": file_size}`
+  - To:   `extra={"attachment_filename": filename, "attachment_size_bytes": file_size}`
+
+This ensures `gmail_send` can complete successfully and return its result after attaching files.
+
+
+3) Observability: Knowing What the Agents Are Doing
+---------------------------------------------------
+**Problem:**
+When running on Cloud Run with RemoteGraph, it can be hard to see where in the multi-agent flow things are failing. Initial logs did not clearly show:
+- Whether the Researcher actually called Tavily.
+- Whether the Document Creator succeeded in creating a file.
+- Whether Gmail actually called `materialize_base64_attachment` or `gmail_send`, and if they failed.
+
+**Solution:**
+Add structured, per-iteration logging inside each agent's base runtime and tools, without changing their fundamental logic:
+
+- Researcher base agent:
+  - Logs each iteration of the tool loop.
+  - Logs whether LLM responses contain tool calls and how many.
+  - Logs which tool is executed (e.g., `tavily_search`) and whether it succeeds or errors.
+
+- Document Creator tools (write_markdown_file):
+  - Already logged current working directory, outputs directory path, the created file path, and file size.
+  - These logs confirm the report file is created and non-empty.
+
+- Gmail base agent:
+  - Logs each iteration of the LLM+tool loop.
+  - Logs whether there are tool calls and how many.
+  - Logs each tool call by name (`materialize_base64_attachment`, `gmail_send`) and call ID.
+  - Logs whether each tool call succeeds or throws.
+
+- Gmail tools:
+  - `materialize_base64_attachment`:
+    - Logs where the attachment file was written and its size.
+  - `gmail_send`:
+    - Logs who the email is going to, subject, and number of attachments.
+    - Logs successful attachment of each file (now with safe key names).
+
+These logs make it possible to verify end-to-end that:
+- Tavily research is executed.
+- The report file is created by Document Creator with valid content.
+- Gmail reconstructs the file in its own container and successfully attaches it.
+- Any remaining failure is a true external problem (e.g., Gmail API, OAuth, rate limits) rather than an internal logging or path issue.
+
+
+4) Handling LLM Rate Limits (Context)
+-------------------------------------
+**Observation:**
+While debugging, the Gmail agent occasionally hit OpenAI rate limits (`HTTP 429`) when calling the LLM. These manifests as `RateLimitError` logs from the OpenAI client.
+
+**Impact on Attachments:**
+The rate limit errors themselves do not break the attachment logic, but they can delay or interrupt the LLM step that decides which tools to call. Once rate limits subside, the Gmail agent can still call `materialize_base64_attachment` and `gmail_send` successfully.
+
+
+Final State of the Attachment Flow
+----------------------------------
+After these fixes and logging improvements:
+
+1. Researcher:
+   - Uses Tavily search via its tool when asked to "research" a topic.
+   - Returns a `completed_capability: "research"` completion contract with structured research data.
+
+2. Document Creator:
+   - Reads the research data from conversation history.
+   - Creates a markdown report file under `outputs/` in its own container.
+   - Encodes the file as base64 and returns a `completed_capability: "create_document"` completion contract that includes file_path, abs_file_path, file_base64, filename, and mime_type.
+
+3. Gmail:
+   - Receives the full message history, including the Document Creator completion contract.
+   - For a request that asks to "send the file via gmail":
+     - Uses `materialize_base64_attachment` to decode `file_base64` into a local file under `outputs/attachments/` in the Gmail container.
+     - Calls `gmail_send` with `attachments` pointing to that local file.
+     - Logs successful attachment and sends the email via Gmail API.
+     - Returns a `completed_capability: "gmail"` completion contract so Supervisor can mark the step complete.
+
+4. Optional Attachments:
+   - If there is no document completion contract with `file_base64`, the Gmail agent can still send a plain email (no attachments), and the attachment logic is simply skipped.
+
+Overall, the obstacles were:
+- Cross-container filesystem assumptions (fixed by using base64 + local materialization).
+- Logging name collisions with reserved `LogRecord` attributes (fixed by using non-reserved extra keys).
+- Limited observability into agent/tool behaviour (improved by adding structured logs around tool loops and tool executions).
+
+With these addressed, file attachment handling is now robust and debuggable, and plain emails remain fully supported when the user does not request a file attachment.

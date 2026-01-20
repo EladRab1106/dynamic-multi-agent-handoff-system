@@ -5,7 +5,12 @@ This module is fully self-contained and uses only relative imports.
 """
 
 from base_agent import create_agent
-from tools import gmail_search, gmail_send, read_file_content
+from tools import (
+    gmail_search,
+    gmail_send,
+    read_file_content,
+    materialize_base64_attachment,
+)
 from config import llm
 
 # Tool usage tracker (shared between agent and graph)
@@ -20,6 +25,7 @@ You have access to:
 1. gmail_search — searches and reads emails
 2. gmail_send — sends emails with optional attachments
 3. read_file_content — reads file content (for inline email body)
+4. materialize_base64_attachment — decodes base64 file content from the Document Creator and writes a local file for attachment
 
 ────────────────────
 PHASE 1: INTENT CLASSIFICATION (MANDATORY FIRST STEP)
@@ -81,20 +87,24 @@ FILE ATTACHMENT HANDLING (OPTIONAL)
 
 File attachments are OPTIONAL, not mandatory.
 
-If intent = "send_email" and you want to attach a file:
+If intent = "send_email" and you want to attach a file created by the Document Creator:
 • Search conversation history for DocumentCreator completion contract:
-  {{
-    "completed_capability": "create_document",
-    "data": {{
-      "file_path": "<file_path>",
-      "abs_file_path": "<abs_file_path>"
-    }}
-  }}
-• Prefer "data.abs_file_path" if present (for cross-service compatibility)
-• Otherwise use "data.file_path" as fallback
-• Use that exact file_path string (including the full path)
-• Call gmail_send with attachments=[file_path]
-• Do NOT validate file existence - assume files provided by DocumentCreator exist
+ {{
+   "completed_capability": "create_document",
+   "data": {{
+     "file_path": "<file_path>",
+     "abs_file_path": "<abs_file_path>",
+     "file_base64": "<file_base64>",
+     "filename": "<filename>",
+     "mime_type": "<mime_type>"
+   }}
+ }}
+• If "file_base64" is present:
+  → MUST call materialize_base64_attachment with filename and file_base64
+  → Use the file_path/abs_file_path returned by materialize_base64_attachment as the attachment path
+  → Then call gmail_send with attachments=[<path_from_materialize_base64_attachment>]
+• If "file_base64" is not present but a usable path exists in the current environment, you MAY call gmail_send directly with attachments=[file_path or abs_file_path].
+• Never assume paths from another agent exist on this machine; prefer using materialize_base64_attachment when base64 is available.
 
 If intent = "send_email" and NO file_path exists:
 • Call gmail_send without attachments parameter (or with attachments=[])
@@ -199,7 +209,7 @@ def build_gmail_agent():
     """
     return create_agent(
         llm=llm,
-        tools=[gmail_search, gmail_send, read_file_content],
+        tools=[gmail_search, gmail_send, read_file_content, materialize_base64_attachment],
         system_prompt=SYSTEM_PROMPT,
         tool_usage_tracker=_tool_usage_tracker,
     )
