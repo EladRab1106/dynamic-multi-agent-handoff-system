@@ -1,0 +1,5 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/chkp-gcp-rnd-thunderdome-base/supervisor-agent:latest', '-f', 'agents/supervisor/Dockerfile', '.']
+images:
+  - 'gcr.io/chkp-gcp-rnd-thunderdome-base/supervisor-agent:latest'

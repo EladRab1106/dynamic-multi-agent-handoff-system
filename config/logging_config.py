@@ -29,6 +29,14 @@ LANGGRAPH_LOGGERS: Iterable[str] = (
     "langgraph_sdk",
 )
 
+# External transport / XMPP stack (AZTM + underlying XMPP lib)
+AZTM_LOGGERS: Iterable[str] = (
+    "aztm",
+    "aztm.core",
+    "aztm.interceptors",
+    "slixmpp",
+)
+
 
 def setup_logging() -> None:
     """Configure root logging and enable verbose HTTP + LangGraph logs.
@@ -49,13 +57,21 @@ def setup_logging() -> None:
     else:
         root.setLevel(level)
 
-    # HTTP clients: always log at DEBUG so we can see URLs, methods, status codes.
-    for name in HTTP_LOGGERS:
-        logging.getLogger(name).setLevel(logging.DEBUG)
+    # HTTP clients: only promote to DEBUG when global LOG_LEVEL is DEBUG.
+    # At INFO and above we keep them quieter to avoid overwhelming the console.
+    if level <= logging.DEBUG:
+        for name in HTTP_LOGGERS:
+            logging.getLogger(name).setLevel(logging.DEBUG)
 
     # LangGraph libraries for routing / RemoteGraph behaviour.
     for name in LANGGRAPH_LOGGERS:
         logging.getLogger(name).setLevel(logging.DEBUG)
+
+    # AZTM / XMPP stack: default to INFO unless AZTM_LOG_LEVEL explicitly overrides.
+    aztm_level_name = os.getenv("AZTM_LOG_LEVEL", "INFO").upper()
+    aztm_level = getattr(logging, aztm_level_name, logging.INFO)
+    for name in AZTM_LOGGERS:
+        logging.getLogger(name).setLevel(aztm_level)
 
     # Optional: reduce noise from very chatty libraries by lowering their level
     # here if needed in the future.

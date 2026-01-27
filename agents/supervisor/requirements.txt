@@ -84,3 +84,5 @@ zstandard==0.25.0
 fastapi==0.115.0
 langserve
 uvicorn[standard]==0.32.0
+langgraph-cli[all]
+langgraph-cli[inmem]
