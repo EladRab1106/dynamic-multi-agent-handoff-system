@@ -34,6 +34,11 @@ langchain-classic==1.0.0
 langchain-community==0.4.1
 langchain-core==1.1.0
 langchain-openai==1.1.0
+
+# MCP (Model Context Protocol) integration
+langchain-mcp-adapters==0.2.1
+mcp==1.26.0
+
 langchain-tavily==0.2.13
 langchain-text-splitters==1.0.0
 langgraph==1.0.4
@@ -86,3 +91,4 @@ langserve
 uvicorn[standard]==0.32.0
 langgraph-cli[all]
 langgraph-cli[inmem]
+aztm @ git+https://oauth2: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@github.com/eladrave/aztm.git@aztmnative
